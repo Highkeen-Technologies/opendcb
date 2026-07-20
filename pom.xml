@@ -50,6 +50,7 @@
 
     <modules>
         <module>eventstore-core</module>
+        <module>integrations/eventstore-axon</module>
     </modules>
 
     <dependencyManagement>

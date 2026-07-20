@@ -53,7 +53,8 @@ opendcb/
 │   │   AbstractDcbEventStorageEngine — implements Axon's real
 │   │   EventStorageEngine SPI, translating to/from StoredEvent/EventStoreStorage.
 │   │   The ONLY module that imports org.axonframework.
-│   │   Status: NOT STARTED.
+│   │   Status: DONE — implemented and unit tested against an in-memory
+│   │   EventStoreStorage test double (no real provider wired in yet).
 │   │   Depends on: eventstore-core, org.axonframework.
 │   │
 │   └── eventstore-<future-framework>/
@@ -118,7 +119,9 @@ events).
 1. ~~`eventstore-core`~~ — DONE (port only: `StoredEvent`, `EventStoreStorage`).
 2. `eventstore-postgres` — NOT STARTED. Build alongside the
    `EventStoreStorageContractTest` suite (@docs/TESTING.md), not after.
-3. `integrations/eventstore-axon` — NOT STARTED.
+3. ~~`integrations/eventstore-axon`~~ — DONE (adapter implemented and unit
+   tested against an in-memory `EventStoreStorage` double; no real provider
+   wired in yet since `eventstore-postgres` isn't built).
 4. `routing-spring-boot-axon` — small, high value, unblocks multi-instance scaling.
 5. `outbox-relay-core` + `outbox-relay-kafka` — unlocks the microservices story.
 6. `examples/microservices-sample` — proves 1–5 actually compose correctly.
