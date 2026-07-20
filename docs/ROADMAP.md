@@ -39,7 +39,13 @@ opendcb/
 │   pre-serialized JSON string, so no Jackson dependency here).
 │
 ├── eventstore-postgres/
-│   Status: NOT STARTED.
+│   PostgresEventStoreStorage — plain JDBC, no ORM. appendAtomically uses a
+│   transaction-scoped pg_advisory_xact_lock to serialize concurrent appends
+│   across JVMs, then conflict-checks the tail in-transaction before insert.
+│   Status: IN PROGRESS — implemented, compiles and installs cleanly, but
+│   not yet merge-ready: the shared EventStoreStorageContractTest suite from
+│   docs/TESTING.md doesn't exist yet (no test-jar on eventstore-core), so
+│   this provider has no Testcontainers-backed proof of correctness yet.
 │   Depends on: eventstore-core, postgresql driver (provided scope).
 │
 ├── eventstore-mysql/
@@ -117,8 +123,9 @@ events).
 ## Suggested build order
 
 1. ~~`eventstore-core`~~ — DONE (port only: `StoredEvent`, `EventStoreStorage`).
-2. `eventstore-postgres` — NOT STARTED. Build alongside the
-   `EventStoreStorageContractTest` suite (@docs/TESTING.md), not after.
+2. `eventstore-postgres` — IN PROGRESS. `PostgresEventStoreStorage` is
+   implemented; still needs the `EventStoreStorageContractTest` suite
+   (@docs/TESTING.md), which should be built now, not deferred further.
 3. ~~`integrations/eventstore-axon`~~ — DONE (adapter implemented and unit
    tested against an in-memory `EventStoreStorage` double; no real provider
    wired in yet since `eventstore-postgres` isn't built).
