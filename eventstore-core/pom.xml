@@ -33,4 +33,12 @@
         Framework-agnostic event store port (StoredEvent, EventStoreStorage).
         No dependency on Axon or any other event-sourcing framework.
     </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 </project>

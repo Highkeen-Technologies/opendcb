@@ -29,15 +29,17 @@ framework worth supporting shows up later.
 opendcb/
 │
 ├── eventstore-core/
-│   Framework-agnostic. StoredEvent, EventStoreStorage (port). Zero
-│   dependency on Axon or any other framework — this is the layer meant to
-│   survive a framework change.
-│   Status: DONE — extracted from the sample project, package renamed to
-│   com.highkeen.opendcb.eventstore.core.
-│   Depends on: nothing but the JDK + Jackson (for StoredEvent's payload field).
+│   Framework-agnostic. StoredEvent (record, with nested StoredTag) and
+│   EventStoreStorage (port: appendAtomically, readRange, maxPosition,
+│   minPosition, positionAtOrAfter, ConcurrentAppendConflictException).
+│   Zero dependency on Axon or any other framework — this is the layer
+│   meant to survive a framework change.
+│   Status: DONE — port defined and unit tested.
+│   Depends on: nothing but the JDK (StoredEvent carries payload as a
+│   pre-serialized JSON string, so no Jackson dependency here).
 │
 ├── eventstore-postgres/
-│   Status: DONE — PostgresEventStoreStorage, working JDBC implementation.
+│   Status: NOT STARTED.
 │   Depends on: eventstore-core, postgresql driver (provided scope).
 │
 ├── eventstore-mysql/
@@ -51,9 +53,7 @@ opendcb/
 │   │   AbstractDcbEventStorageEngine — implements Axon's real
 │   │   EventStorageEngine SPI, translating to/from StoredEvent/EventStoreStorage.
 │   │   The ONLY module that imports org.axonframework.
-│   │   Status: DONE — extracted from the sample project (was originally
-│   │   bundled into eventstore-core before the framework-agnostic split;
-│   │   moved here).
+│   │   Status: NOT STARTED.
 │   │   Depends on: eventstore-core, org.axonframework.
 │   │
 │   └── eventstore-<future-framework>/
@@ -90,13 +90,11 @@ opendcb/
 │   META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports.
 │   Named "-axon" specifically so a future spring-boot-starter-<framework>
 │   is its own module, not a branch inside this one.
-│   Status: IN PROGRESS — OpenDcbPostgresAutoConfiguration +
-│   OpenDcbProperties scaffolded; needs the routing/relay pieces once those
-│   modules exist.
+│   Status: NOT STARTED.
 │   Depends on: integrations/eventstore-axon, a provider, routing-spring-boot-axon.
 │
 └── examples/
-    ├── monolith-sample/       (DONE, as axon5-sample — needs package rename)
+    ├── monolith-sample/       (NOT STARTED)
     └── microservices-sample/  (NOT STARTED)
 ```
 
@@ -117,11 +115,10 @@ events).
 
 ## Suggested build order
 
-1. ~~`eventstore-core` + `eventstore-postgres`~~ — DONE, extracted with
-   package rename to `com.highkeen.opendcb.*`.
-2. ~~`integrations/eventstore-axon`~~ — DONE, split out of what was
-   originally bundled with eventstore-core.
-3. `spring-boot-starter-axon` — IN PROGRESS. Finish once routing exists.
+1. ~~`eventstore-core`~~ — DONE (port only: `StoredEvent`, `EventStoreStorage`).
+2. `eventstore-postgres` — NOT STARTED. Build alongside the
+   `EventStoreStorageContractTest` suite (@docs/TESTING.md), not after.
+3. `integrations/eventstore-axon` — NOT STARTED.
 4. `routing-spring-boot-axon` — small, high value, unblocks multi-instance scaling.
 5. `outbox-relay-core` + `outbox-relay-kafka` — unlocks the microservices story.
 6. `examples/microservices-sample` — proves 1–5 actually compose correctly.
