@@ -42,10 +42,13 @@ opendcb/
 │   PostgresEventStoreStorage — plain JDBC, no ORM. appendAtomically uses a
 │   transaction-scoped pg_advisory_xact_lock to serialize concurrent appends
 │   across JVMs, then conflict-checks the tail in-transaction before insert.
-│   Status: IN PROGRESS — implemented, compiles and installs cleanly, but
-│   not yet merge-ready: the shared EventStoreStorageContractTest suite from
-│   docs/TESTING.md doesn't exist yet (no test-jar on eventstore-core), so
-│   this provider has no Testcontainers-backed proof of correctness yet.
+│   Status: DONE — passes the full EventStoreStorageContractTest suite
+│   (@docs/TESTING.md) against a real PostgreSQL 16 Testcontainers instance,
+│   including the concurrent cross-JVM conflict test (two EventStoreStorage
+│   instances racing an overlapping-predicate append; verified the advisory
+│   lock is load-bearing, not just present, by rerunning that test in
+│   isolation and by tracing the check-then-act race that appears if the
+│   lock is removed).
 │   Depends on: eventstore-core, postgresql driver (provided scope).
 │
 ├── eventstore-mysql/
@@ -123,12 +126,15 @@ events).
 ## Suggested build order
 
 1. ~~`eventstore-core`~~ — DONE (port only: `StoredEvent`, `EventStoreStorage`).
-2. `eventstore-postgres` — IN PROGRESS. `PostgresEventStoreStorage` is
-   implemented; still needs the `EventStoreStorageContractTest` suite
-   (@docs/TESTING.md), which should be built now, not deferred further.
+2. ~~`eventstore-postgres`~~ — DONE (`PostgresEventStoreStorage`, plus the
+   `EventStoreStorageContractTest` suite from @docs/TESTING.md, now living
+   in `eventstore-core`'s test-jar and passing against a real Postgres 16
+   Testcontainers instance).
 3. ~~`integrations/eventstore-axon`~~ — DONE (adapter implemented and unit
-   tested against an in-memory `EventStoreStorage` double; no real provider
-   wired in yet since `eventstore-postgres` isn't built).
+   tested against an in-memory `EventStoreStorage` double; still not wired
+   up against `eventstore-postgres` in any example or integration test,
+   though that provider now exists — nothing currently exercises the two
+   together end-to-end).
 4. `routing-spring-boot-axon` — small, high value, unblocks multi-instance scaling.
 5. `outbox-relay-core` + `outbox-relay-kafka` — unlocks the microservices story.
 6. `examples/microservices-sample` — proves 1–5 actually compose correctly.
@@ -151,7 +157,3 @@ events).
   Jackson directly rather than Axon's `Converter`/upcaster SPI (documented
   as a deliberate simplification). Worth deciding now whether the toolkit
   commits to wiring the real `Converter` SPI before v1.0.
-- **Testing strategy:** the shared `EventStoreStorageContractTest` suite
-  (@docs/TESTING.md) should be built alongside `eventstore-postgres`, not
-  after — retrofitting it once three providers exist independently is more
-  work and more likely to surface a provider that's subtly non-compliant.
