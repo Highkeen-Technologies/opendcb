@@ -55,6 +55,7 @@
         <module>bootstrap-axon-postgres</module>
         <module>opendcb-axon-spring-boot-starter</module>
         <module>opendcb-axon-spring-boot-routing</module>
+        <module>examples/plain-java-sample</module>
     </modules>
 
     <dependencyManagement>

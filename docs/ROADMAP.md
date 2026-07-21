@@ -172,9 +172,22 @@ opendcb/
 │
 └── examples/
     ├── monolith-sample/       (NOT STARTED)
-    ├── plain-java-sample/     (NOT STARTED — proves the no-Spring path using
-    │                           bootstrap-axon-postgres directly; no Spring
-    │                           dependency anywhere in this example)
+    ├── plain-java-sample/     Status: DONE — a plain public static void main(String[])
+    │   wires everything by hand (PGSimpleDataSource, OpenDcbAxonPostgres.engine(dataSource),
+    │   an EventSourcingConfigurer) with zero Spring anywhere in the module (verified via
+    │   grep -r "org.springframework" examples/plain-java-sample/ returning nothing but its
+    │   own README's instructions). Domain: AccountEntity (state only) +
+    │   AccountCommandHandlers, a separate Stateful Command Handler class using @InjectEntity
+    │   for the instance command (DepositMoney) alongside a creational command (OpenAccount),
+    │   per docs/CONVENTIONS.md. Also serves as the first true end-to-end smoke test of the
+    │   whole stack beyond isolated unit/contract tests: run against a real Postgres 16
+    │   container, it dispatches OpenAccount + two DepositMoney commands through one
+    │   EventSourcingConfigurer, then shuts it down and builds a second, fully independent
+    │   EventSourcingConfigurer (autoCreateSchema=false) against the same database — the
+    │   re-sourced entity's state matched the write-side state exactly (balance=150.00 both
+    │   times), proving durability rather than in-memory carryover between configurers.
+    │   Depends on: bootstrap-axon-postgres, postgresql driver (compile scope — this is a
+    │   standalone app, not a library, so unlike eventstore-postgres the driver isn't provided).
     └── microservices-sample/  (NOT STARTED)
 ```
 
@@ -213,10 +226,11 @@ events).
 6. ~~`opendcb-axon-spring-boot-routing`~~ — DONE. Unblocks multi-instance
    scaling; the cross-JVM claim-conflict test proves the actual guarantee,
    not just bean wiring.
-7. `examples/plain-java-sample` — proves the no-Spring path via
+7. ~~`examples/plain-java-sample`~~ — DONE. Proves the no-Spring path via
    bootstrap-axon-postgres directly; also doubles as the first true
-   end-to-end smoke test of the whole stack (append via a command, read
-   back via source/stream) rather than isolated unit/contract tests.
+   end-to-end smoke test of the whole stack (dispatch via commands, read
+   back via a second, independent EventSourcingConfigurer) rather than
+   isolated unit/contract tests.
 8. `outbox-relay-core` + `outbox-relay-kafka` — unlocks the microservices story.
 9. `examples/microservices-sample` — proves the full stack composes correctly
    across bounded contexts.
