@@ -15,34 +15,34 @@ upward dependencies — this is what keeps modules independently publishable
 and keeps the framework-agnostic layer honestly agnostic.
 
 ```
-1. eventstore-core                    (no dependency on any framework, or any other
-                                        toolkit module)
-2. eventstore-postgres                 depends on: eventstore-core
-   eventstore-mysql                    depends on: eventstore-core
-   eventstore-mongo                    depends on: eventstore-core
-3. integrations/eventstore-axon        depends on: eventstore-core + org.axonframework
-   integrations/eventstore-<other>     depends on: eventstore-core + that framework
-                                        (hypothetical — added only if/when needed)
-4. routing-spring-boot-axon            depends on: eventstore-core, integrations/eventstore-axon
-                                        (Axon-specific: token store / segment routing concepts
-                                        don't generalize across frameworks — a different
-                                        framework would need its own routing module)
-5. outbox-relay-core                   depends on: eventstore-core only
-                                        (framework-agnostic: it just tails
-                                        EventStoreStorage.readRange)
-6. outbox-relay-kafka                  depends on: outbox-relay-core
-   outbox-relay-rabbitmq               depends on: outbox-relay-core
-   outbox-relay-webhook                depends on: outbox-relay-core
-7. bootstrap-axon-postgres             depends on: integrations/eventstore-axon, eventstore-postgres
-   bootstrap-axon-<provider>           depends on: integrations/eventstore-axon, eventstore-<provider>
-                                        (one bootstrap module per provider — see
-                                        "Bootstrap modules" section below)
-8. spring-boot-starter-axon            depends on: bootstrap-axon-postgres (or whichever
-                                        bootstrap module matches its default provider) +
-                                        routing-spring-boot-axon
-                                        (a future spring-boot-starter-<framework> would be
-                                        its own module, not a branch inside this one)
-9. examples/*                          depends on: whatever the example demonstrates
+1. eventstore-core                          (no dependency on any framework, or any other
+                                              toolkit module)
+2. eventstore-postgres                       depends on: eventstore-core
+   eventstore-mysql                          depends on: eventstore-core
+   eventstore-mongo                          depends on: eventstore-core
+3. integrations/eventstore-axon              depends on: eventstore-core + org.axonframework
+   integrations/eventstore-<other>           depends on: eventstore-core + that framework
+                                              (hypothetical — added only if/when needed)
+4. opendcb-axon-spring-boot-routing          depends on: eventstore-core, integrations/eventstore-axon
+                                              (Axon-specific: token store / segment routing concepts
+                                              don't generalize across frameworks — a different
+                                              framework would need its own routing module)
+5. outbox-relay-core                         depends on: eventstore-core only
+                                              (framework-agnostic: it just tails
+                                              EventStoreStorage.readRange)
+6. outbox-relay-kafka                        depends on: outbox-relay-core
+   outbox-relay-rabbitmq                     depends on: outbox-relay-core
+   outbox-relay-webhook                      depends on: outbox-relay-core
+7. bootstrap-axon-postgres                   depends on: integrations/eventstore-axon, eventstore-postgres
+   bootstrap-axon-<provider>                 depends on: integrations/eventstore-axon, eventstore-<provider>
+                                              (one bootstrap module per provider — see
+                                              "Bootstrap modules" section below)
+8. opendcb-axon-spring-boot-starter          depends on: bootstrap-axon-postgres (or whichever
+                                              bootstrap module matches its default provider) +
+                                              opendcb-axon-spring-boot-routing
+                                              (a future opendcb-<framework>-spring-boot-starter
+                                              would be its own module, not a branch inside this one)
+9. examples/*                                depends on: whatever the example demonstrates
 ```
 
 `eventstore-postgres`, `eventstore-mysql`, and `eventstore-mongo` must never
@@ -75,19 +75,18 @@ A second framework showing up in the market means adding
 framework's own storage SPI the same way. `eventstore-postgres` (and any
 other provider) needs zero changes to support it.
 
-Note: as of the current build, `eventstore-axon` and `eventstore-postgres`
-have each been verified independently (unit tests against an in-memory
-double; the Postgres contract suite against a real container) but nothing
-yet wires the two together end-to-end. `bootstrap-axon-postgres` (below) is
-the first place that actually happens — worth treating its build as an
-integration checkpoint, not just a convenience module.
+Note: `eventstore-axon` and `eventstore-postgres` were originally verified
+independently (unit tests against an in-memory double; the Postgres contract
+suite against a real container). `bootstrap-axon-postgres` closed that gap —
+it's the first module that proves the two work together end-to-end against
+a real Postgres instance, not just in isolation.
 
 ## What does NOT generalize across frameworks
 
-- **Read-side routing** (`routing-spring-boot-axon`, built on Axon's own
-  `JdbcTokenStore`) is inherently Axon-specific — token store and segment
-  claiming are Axon Framework concepts. A different framework needs its own
-  routing module; there is no shared abstraction possible here.
+- **Read-side routing** (`opendcb-axon-spring-boot-routing`, built on Axon's
+  own `JdbcTokenStore`) is inherently Axon-specific — token store and
+  segment claiming are Axon Framework concepts. A different framework needs
+  its own routing module; there is no shared abstraction possible here.
 - Everything under `outbox-relay-*` stays framework-agnostic regardless,
   since it only reads from `EventStoreStorage` directly.
 
@@ -117,7 +116,7 @@ Rules for this tier:
   of each, and never depended upon by `eventstore-core`, any provider, or
   any `integrations/*` module (dependency flows one direction only: into
   the bootstrap module, never out of it).
-- `spring-boot-starter-axon` must call into `bootstrap-axon-postgres`
+- `opendcb-axon-spring-boot-starter` must call into `bootstrap-axon-postgres`
   internally rather than re-implementing the same wiring — one source of
   truth for "how do you correctly assemble Axon + Postgres," shared by both
   the Spring and non-Spring paths.
@@ -128,7 +127,7 @@ Rules for this tier:
 ## Two supported deployment shapes
 
 **Monolithic / single bounded context**: `eventstore-postgres` (or another
-provider) + `integrations/eventstore-axon` + `routing-spring-boot-axon`.
+provider) + `integrations/eventstore-axon` + `opendcb-axon-spring-boot-routing`.
 Multiple instances scale via the shared `JdbcTokenStore` — no broker.
 
 **Event-driven microservices**: each service still uses its own
@@ -142,6 +141,13 @@ payload directly. See @docs/PROVIDERS.md for adapter-specific detail and
 
 Root package: `com.highkeen.opendcb`.
 
+Naming note: `opendcb-axon-spring-boot-starter` and
+`opendcb-axon-spring-boot-routing` deliberately do NOT start with
+`spring-boot` — Spring Boot's own convention for third-party starters
+(docs.spring.io, "Creating Your Own Starter" → "Naming") explicitly says not
+to, since that implies official Spring support. The project name comes
+first, `-spring-boot-...` is the suffix.
+
 | Module | Package |
 |---|---|
 | `eventstore-core` | `com.highkeen.opendcb.eventstore.core` |
@@ -149,12 +155,12 @@ Root package: `com.highkeen.opendcb`.
 | `eventstore-mysql` | `com.highkeen.opendcb.eventstore.mysql` |
 | `eventstore-mongo` | `com.highkeen.opendcb.eventstore.mongo` |
 | `integrations/eventstore-axon` | `com.highkeen.opendcb.integrations.axon` |
-| `routing-spring-boot-axon` | `com.highkeen.opendcb.routing.axon.springboot` |
+| `opendcb-axon-spring-boot-routing` | `com.highkeen.opendcb.routing.axon.springboot` |
 | `outbox-relay-core` | `com.highkeen.opendcb.relay.core` |
 | `outbox-relay-kafka` | `com.highkeen.opendcb.relay.kafka` |
 | `outbox-relay-rabbitmq` | `com.highkeen.opendcb.relay.rabbitmq` |
 | `outbox-relay-webhook` | `com.highkeen.opendcb.relay.webhook` |
 | `bootstrap-axon-postgres` | `com.highkeen.opendcb.bootstrap.axon.postgres` |
-| `spring-boot-starter-axon` | `com.highkeen.opendcb.springboot.axon` |
+| `opendcb-axon-spring-boot-starter` | `com.highkeen.opendcb.springboot.axon` |
 
 Maven `groupId` for every module: `com.highkeen.opendcb`.

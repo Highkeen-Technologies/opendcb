@@ -63,11 +63,10 @@ opendcb/
 │   │   EventStorageEngine SPI, translating to/from StoredEvent/EventStoreStorage.
 │   │   The ONLY module that imports org.axonframework.
 │   │   Status: DONE — implemented and unit tested against an in-memory
-│   │   EventStoreStorage test double. NOT yet wired up against
-│   │   eventstore-postgres in any example or integration test — nothing
-│   │   currently exercises the two together end-to-end. Closing that gap
-│   │   is bootstrap-axon-postgres's job, below — treat that module's build
-│   │   as the first real integration checkpoint, not just a convenience.
+│   │   EventStoreStorage test double. Now also proven wired up against a
+│   │   real provider: bootstrap-axon-postgres exercises eventstore-axon +
+│   │   eventstore-postgres together end-to-end against a real Postgres 16
+│   │   Testcontainers instance — that integration gap is closed.
 │   │   Depends on: eventstore-core, org.axonframework.
 │   │
 │   └── eventstore-<future-framework>/
@@ -75,7 +74,7 @@ opendcb/
 │       Same shape as eventstore-axon. eventstore-postgres/mysql/mongo need
 │       zero changes to support it.
 │
-├── routing-spring-boot-axon/
+├── opendcb-axon-spring-boot-routing/
 │   Wires Axon's own free JdbcTokenStore against whichever eventstore-*
 │   datasource is active, so PooledStreamingEventProcessor segments can be
 │   claimed/rebalanced across multiple JVM instances. Axon-specific by
@@ -113,17 +112,31 @@ opendcb/
 │   second, brand-new EventSourcingConfigurer against the same database.
 │   Depends on: integrations/eventstore-axon, eventstore-postgres.
 │
-├── spring-boot-starter-axon/
-│   Packages eventstore-postgres (or whichever provider) +
-│   integrations/eventstore-axon + routing-spring-boot-axon + outbox-relay-*
-│   as a real Spring Boot starter with proper
-│   META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports.
-│   Named "-axon" specifically so a future spring-boot-starter-<framework>
-│   is its own module, not a branch inside this one. Internally delegates
-│   its wiring to bootstrap-axon-postgres rather than duplicating it — one
-│   source of truth for both the Spring and non-Spring paths.
-│   Status: NOT STARTED.
-│   Depends on: bootstrap-axon-postgres, routing-spring-boot-axon.
+├── opendcb-axon-spring-boot-starter/
+│   OpenDcbPostgresAutoConfiguration — a Spring Boot 4 @AutoConfiguration
+│   that resolves an openDcbEventStoreDataSource bean (reuse the app's
+│   primary DataSource via opendcb.eventstore.datasource.use-primary, build
+│   a dedicated one from opendcb.eventstore.datasource.url, or fall back to
+│   the primary DataSource with a logged INFO message) and delegates to
+│   bootstrap-axon-postgres's OpenDcbAxonPostgres.engine(...) for the
+│   EventStorageEngine bean. Named opendcb-axon-... (not spring-boot-...)
+│   per Spring Boot's own starter-naming convention — third-party starters
+│   must not be prefixed spring-boot, since that implies official Spring
+│   support. A future opendcb-<framework>-spring-boot-starter would be its
+│   own module, not a branch inside this one.
+│   Status: DONE — OpenDcbProperties + OpenDcbPostgresAutoConfiguration
+│   implemented (Spring Boot 4.1.0 / Spring Framework 7), backing off
+│   correctly both when opendcb.eventstore.provider=none and when a
+│   user-supplied EventStorageEngine bean already exists (in which case
+│   neither openDcbEventStoreDataSource nor any dedicated DataSource gets
+│   constructed either — verified via ApplicationContextRunner with an
+│   unreachable datasource.url, proving no connection is ever attempted).
+│   Six ApplicationContextRunner tests cover the fallback/use-primary/
+│   explicit-url DataSource resolution paths and both back-off cases.
+│   Does not yet package opendcb-axon-spring-boot-routing or outbox-relay-*
+│   (those modules don't exist yet) — this covers the eventstore-postgres +
+│   integrations/eventstore-axon wiring only, via bootstrap-axon-postgres.
+│   Depends on: bootstrap-axon-postgres.
 │
 └── examples/
     ├── monolith-sample/       (NOT STARTED)
@@ -136,7 +149,7 @@ opendcb/
 ## The two usage patterns this needs to support
 
 **Monolithic / single-bounded-context deployment**
-`eventstore-postgres` + `integrations/eventstore-axon` + `routing-spring-boot-axon`
+`eventstore-postgres` + `integrations/eventstore-axon` + `opendcb-axon-spring-boot-routing`
 only. Multiple pods of the same app scale horizontally via the shared
 `JdbcTokenStore` — no broker, no relay. Default recommendation for most
 single-team deployments unless there's a concrete reason to split services.
@@ -156,16 +169,17 @@ events).
    in `eventstore-core`'s test-jar and passing against a real Postgres 16
    Testcontainers instance).
 3. ~~`integrations/eventstore-axon`~~ — DONE (adapter implemented and unit
-   tested against an in-memory `EventStoreStorage` double; still not wired
-   up against `eventstore-postgres` in any example or integration test,
-   though that provider now exists — nothing currently exercises the two
-   together end-to-end).
+   tested against an in-memory `EventStoreStorage` double; wiring against a
+   real `eventstore-postgres` instance end-to-end is item 4, below).
 4. ~~`bootstrap-axon-postgres`~~ — DONE. First thing that actually proves
    eventstore-axon + eventstore-postgres work together, not just
    independently, via a real Postgres-backed integration test.
-5. `spring-boot-starter-axon` — depends on bootstrap-axon-postgres existing
-   first, so it can delegate rather than duplicate the wiring.
-6. `routing-spring-boot-axon` — small, high value, unblocks multi-instance scaling.
+5. ~~`opendcb-axon-spring-boot-starter`~~ — DONE. Delegates to
+   bootstrap-axon-postgres rather than duplicating its wiring; does not yet
+   package opendcb-axon-spring-boot-routing or outbox-relay-*, since neither
+   exists yet (item 6, below).
+6. `opendcb-axon-spring-boot-routing` — small, high value, unblocks
+   multi-instance scaling.
 7. `examples/plain-java-sample` — proves the no-Spring path via
    bootstrap-axon-postgres directly; also doubles as the first true
    end-to-end smoke test of the whole stack (append via a command, read
