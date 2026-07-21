@@ -80,7 +80,39 @@ opendcb/
 │   claimed/rebalanced across multiple JVM instances. Axon-specific by
 │   nature (token stores are an Axon concept) — a future framework would
 │   need its own routing-<mechanism>-<framework> module.
-│   Status: NOT STARTED.
+│   Status: DONE — OpenDcbRoutingProperties + OpenDcbTokenStoreAutoConfiguration
+│   implemented against the real Axon 5.1.2 JdbcTokenStore API (grounded by
+│   cloning AxonFramework/AxonFramework at the axon-5.1.2 tag, not assumed
+│   from 4.x knowledge). Resolves the event store's own DataSource by
+│   looking up a bean named "openDcbEventStoreDataSource" via BeanFactory —
+│   never a compile-time dependency on opendcb-axon-spring-boot-starter —
+│   falling back to the application's sole DataSource bean with an explicit
+│   INFO warning if the name isn't found, since that fallback may silently
+│   point token coordination at the wrong database. Uses JacksonConverter
+│   (transitively available via axon-messaging -> axon-conversion, no new
+│   dependency) rather than Axon's Spring-aware GeneralConverter, since the
+│   Spring-specific converter/connection-provider classes live in Axon's
+│   own extensions/spring modules, off-limits per this module's dependency
+│   rules. Schema creation uses GenericTokenTableFactory rather than
+│   PostgresTokenTableFactory — a deliberate tradeoff, not an oversight:
+│   the resolved DataSource may not even be the event store's own database
+│   (the primary-DataSource fallback path), so the "compatible with most
+│   databases" factory is the safer default; a Postgres-specific factory
+│   (bytea token column instead of BLOB) remains a possible future
+│   optimization once/if a provider-aware variant is worth the complexity.
+│   Verified beyond bean-wiring: a dedicated cross-JVM test constructs two
+│   independent JdbcTokenStore instances (distinct nodeId each, standing in
+│   for two JVMs) against one shared H2 database — the second instance's
+│   claim attempt on a segment the first still holds throws
+│   UnableToClaimTokenException, and succeeds only after the first releases
+│   it. This is the guarantee the whole module exists for; bean-resolution
+│   tests alone don't demonstrate it. A second test goes further and proves
+│   the SELECT ... FOR UPDATE row lock is load-bearing under true
+│   concurrency, not just sequential ordering: a CountDownLatch pair forces
+│   both nodes' fetchToken calls into their FOR UPDATE at the same instant
+│   (mirroring eventstore-postgres's advisory-lock race test), asserting
+│   succeededA ^ succeededB — exactly one of the two simultaneous claims
+│   succeeds.
 │   Depends on: eventstore-core, integrations/eventstore-axon.
 │
 ├── outbox-relay-core/
@@ -178,8 +210,9 @@ events).
    bootstrap-axon-postgres rather than duplicating its wiring; does not yet
    package opendcb-axon-spring-boot-routing or outbox-relay-*, since neither
    exists yet (item 6, below).
-6. `opendcb-axon-spring-boot-routing` — small, high value, unblocks
-   multi-instance scaling.
+6. ~~`opendcb-axon-spring-boot-routing`~~ — DONE. Unblocks multi-instance
+   scaling; the cross-JVM claim-conflict test proves the actual guarantee,
+   not just bean wiring.
 7. `examples/plain-java-sample` — proves the no-Spring path via
    bootstrap-axon-postgres directly; also doubles as the first true
    end-to-end smoke test of the whole stack (append via a command, read
