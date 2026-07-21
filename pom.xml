@@ -52,6 +52,7 @@
         <module>eventstore-core</module>
         <module>eventstore-postgres</module>
         <module>integrations/eventstore-axon</module>
+        <module>bootstrap-axon-postgres</module>
     </modules>
 
     <dependencyManagement>

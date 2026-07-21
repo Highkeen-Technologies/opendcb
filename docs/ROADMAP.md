@@ -63,7 +63,11 @@ opendcb/
 │   │   EventStorageEngine SPI, translating to/from StoredEvent/EventStoreStorage.
 │   │   The ONLY module that imports org.axonframework.
 │   │   Status: DONE — implemented and unit tested against an in-memory
-│   │   EventStoreStorage test double (no real provider wired in yet).
+│   │   EventStoreStorage test double. NOT yet wired up against
+│   │   eventstore-postgres in any example or integration test — nothing
+│   │   currently exercises the two together end-to-end. Closing that gap
+│   │   is bootstrap-axon-postgres's job, below — treat that module's build
+│   │   as the first real integration checkpoint, not just a convenience.
 │   │   Depends on: eventstore-core, org.axonframework.
 │   │
 │   └── eventstore-<future-framework>/
@@ -93,18 +97,39 @@ opendcb/
 ├── outbox-relay-webhook/     (Publisher impl, simple HTTP callbacks)
 │   Status: NOT STARTED.
 │
+├── bootstrap-axon-postgres/
+│   One factory class (OpenDcbAxonPostgres.engine(dataSource)) gluing
+│   integrations/eventstore-axon + eventstore-postgres together, so a plain
+│   Java/Quarkus/Micronaut consumer gets a working EventStorageEngine in one
+│   call instead of hand-assembling it every project. Also the first place
+│   in the repo where eventstore-axon and eventstore-postgres are actually
+│   exercised together — see the note on that gap above. See
+│   @docs/ARCHITECTURE.md's "Bootstrap modules" section for the dependency
+│   rules this tier follows.
+│   Status: DONE — OpenDcbAxonPostgres.engine(DataSource[, autoCreateSchema])
+│   implemented; proven end-to-end with a real Postgres 16 Testcontainers
+│   instance, a trivial @EventSourcedEntity, and a command dispatched
+│   against one EventSourcingConfigurer then durably re-sourced from a
+│   second, brand-new EventSourcingConfigurer against the same database.
+│   Depends on: integrations/eventstore-axon, eventstore-postgres.
+│
 ├── spring-boot-starter-axon/
 │   Packages eventstore-postgres (or whichever provider) +
 │   integrations/eventstore-axon + routing-spring-boot-axon + outbox-relay-*
 │   as a real Spring Boot starter with proper
 │   META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports.
 │   Named "-axon" specifically so a future spring-boot-starter-<framework>
-│   is its own module, not a branch inside this one.
+│   is its own module, not a branch inside this one. Internally delegates
+│   its wiring to bootstrap-axon-postgres rather than duplicating it — one
+│   source of truth for both the Spring and non-Spring paths.
 │   Status: NOT STARTED.
-│   Depends on: integrations/eventstore-axon, a provider, routing-spring-boot-axon.
+│   Depends on: bootstrap-axon-postgres, routing-spring-boot-axon.
 │
 └── examples/
     ├── monolith-sample/       (NOT STARTED)
+    ├── plain-java-sample/     (NOT STARTED — proves the no-Spring path using
+    │                           bootstrap-axon-postgres directly; no Spring
+    │                           dependency anywhere in this example)
     └── microservices-sample/  (NOT STARTED)
 ```
 
@@ -135,13 +160,24 @@ events).
    up against `eventstore-postgres` in any example or integration test,
    though that provider now exists — nothing currently exercises the two
    together end-to-end).
-4. `routing-spring-boot-axon` — small, high value, unblocks multi-instance scaling.
-5. `outbox-relay-core` + `outbox-relay-kafka` — unlocks the microservices story.
-6. `examples/microservices-sample` — proves 1–5 actually compose correctly.
-7. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-rabbitmq`,
-   `outbox-relay-webhook` — fill in once the pattern is validated once.
-8. `integrations/eventstore-<future-framework>` — only if/when a second
-   framework actually becomes relevant. Not speculative work until then.
+4. ~~`bootstrap-axon-postgres`~~ — DONE. First thing that actually proves
+   eventstore-axon + eventstore-postgres work together, not just
+   independently, via a real Postgres-backed integration test.
+5. `spring-boot-starter-axon` — depends on bootstrap-axon-postgres existing
+   first, so it can delegate rather than duplicate the wiring.
+6. `routing-spring-boot-axon` — small, high value, unblocks multi-instance scaling.
+7. `examples/plain-java-sample` — proves the no-Spring path via
+   bootstrap-axon-postgres directly; also doubles as the first true
+   end-to-end smoke test of the whole stack (append via a command, read
+   back via source/stream) rather than isolated unit/contract tests.
+8. `outbox-relay-core` + `outbox-relay-kafka` — unlocks the microservices story.
+9. `examples/microservices-sample` — proves the full stack composes correctly
+   across bounded contexts.
+10. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-rabbitmq`,
+    `outbox-relay-webhook`, `bootstrap-axon-mysql`, `bootstrap-axon-mongo` —
+    fill in once the pattern is validated once.
+11. `integrations/eventstore-<future-framework>` — only if/when a second
+    framework actually becomes relevant. Not speculative work until then.
 
 ## Open questions worth deciding before writing more code
 
