@@ -120,11 +120,79 @@ opendcb/
 │   position", exposes a Publisher SPI. Framework-agnostic — reads directly
 │   from EventStoreStorage, so it works regardless of which framework(s)
 │   are producing events.
-│   Status: NOT STARTED. Design is settled — implementation is the polling
-│   loop + Publisher interface + its own tiny position-tracking table.
+│   Status: DONE — OutboxRelay.runOnce() reads the last relayed position via
+│   RelayPositionStore, calls EventStoreStorage.readRange, and publishes each
+│   event in order, persisting the new position immediately after each one
+│   (not batched at the end) so a crash mid-batch resumes from the correct
+│   event. PublishException is sealed to exactly RetryablePublishException
+│   (stop the batch, don't advance past the failed event, so the next
+│   runOnce() retries it) and NonRetryablePublishException (hand the event to
+│   DeadLetterSink, advance past it, keep going) — the sealed hierarchy
+│   forces every Publisher implementation to commit to one or the other, per
+│   docs/CONVENTIONS.md's retryable-vs-non-retryable error-handling guidance.
+│   LoggingDeadLetterSink (java.lang.System.Logger, no logging-facade
+│   dependency) is the only DeadLetterSink this module provides; a real sink
+│   (dead-letter table, separate topic) is a transport's concern.
+│   start(pollInterval)/stop() run runOnce() on a daemon
+│   ScheduledExecutorService thread, catching and logging any RuntimeException
+│   per poll so one bad cycle doesn't silently kill all future polling (a
+│   scheduled task that throws suppresses its own future executions
+│   otherwise). JdbcRelayPositionStore is plain, generic ANSI SQL — legitimately
+│   provider-agnostic unlike eventstore-postgres, since it's a trivial
+│   single-row-per-relay-name table (update-then-insert instead of a
+│   vendor-specific upsert, since MERGE/ON CONFLICT syntax isn't portable).
+│   Tested against an in-memory EventStoreStorage/Publisher double (ordering,
+│   retryable-stops-and-retries, non-retryable-dead-letters-and-advances) plus
+│   a dedicated durability test: one OutboxRelay/JdbcRelayPositionStore runs
+│   and stops, then a second, fully independent OutboxRelay + a brand-new
+│   JdbcRelayPositionStore instance against the same H2 DataSource resumes
+│   from the correct position — proving the position genuinely persisted to
+│   the database rather than living in the first relay's Java object.
+│   Depends on: eventstore-core only.
 │
-├── outbox-relay-kafka/       (Publisher impl, plain Spring Kafka)
-├── outbox-relay-rabbitmq/    (Publisher impl, plain Spring AMQP)
+├── outbox-relay-rabbitmq/
+│   RabbitMqPublisher implements Publisher using the plain com.rabbitmq:amqp-client
+│   library directly (no Spring AMQP), built ahead of outbox-relay-kafka since
+│   it fits Highkeen's typical single-team/self-hosted deployment targets
+│   better and outbox-relay-core's Publisher SPI is fully transport-agnostic,
+│   so there's no dependency forcing a specific transport order.
+│   Status: DONE — publish() serializes the StoredEvent record directly to
+│   JSON (its own payloadJson/messageType/tags/metadata fields travel as-is,
+│   never derived from an Axon type), enables publisher confirms
+│   (confirmSelect()) and the mandatory flag with a ReturnListener, then maps
+│   failures per docs/CONVENTIONS.md's retryable-vs-non-retryable split:
+│   IOException/ShutdownSignalException from opening a channel or from
+│   basicPublish itself -> RetryablePublishException (connection/channel
+│   unavailable); TimeoutException or a ShutdownSignalException from
+│   waitForConfirmsOrDie -> RetryablePublishException; an IOException
+│   specifically from waitForConfirmsOrDie -> NonRetryablePublishException
+│   (a broker nack); the ReturnListener flag being set after a successful
+│   confirm -> NonRetryablePublishException (unroutable message). Every one
+│   of these signatures was grounded by reading the real amqp-client source
+│   (ChannelN.waitForConfirmsOrDie, AMQChannel.ensureIsOpen) rather than
+│   assumed — including a real bug this caught: AlreadyClosedException and
+│   the getCloseReason()-triggered ShutdownSignalException are unchecked
+│   RuntimeExceptions thrown from methods declared to only throw IOException,
+│   so they had to be caught explicitly or they'd have escaped as uncaught
+│   errors instead of RetryablePublishException. Takes a Connection rather
+│   than a Channel in its constructor — a deliberate choice, documented in
+│   the class Javadoc: the real client closes the channel itself on both a
+│   nack and a confirm timeout, so a long-lived Channel would become
+│   permanently unusable after the first failure; RabbitMqPublisher instead
+│   lazily opens a fresh Channel whenever the current one is missing or
+│   closed. Tested with a real RabbitMQ Testcontainers instance: a published
+│   event is received intact by a real consumer bound to the exchange/
+│   routing key; closing the connection before publishing throws
+│   RetryablePublishException; publishing to a routing key with no bound
+│   queue throws NonRetryablePublishException. A further end-to-end test
+│   wires a real OutboxRelay against a real PostgreSQL EventStoreStorage and
+│   this Publisher against a real RabbitMQ broker — events appended to
+│   Postgres are relayed and received by a test consumer in order — the
+│   first true proof of the whole cross-bounded-context flow, not just
+│   eventstore-postgres and outbox-relay-rabbitmq verified independently.
+│   Depends on: outbox-relay-core, com.rabbitmq:amqp-client.
+│
+├── outbox-relay-kafka/       (Publisher impl, plain Kafka client)
 ├── outbox-relay-webhook/     (Publisher impl, simple HTTP callbacks)
 │   Status: NOT STARTED.
 │
@@ -231,13 +299,22 @@ events).
    end-to-end smoke test of the whole stack (dispatch via commands, read
    back via a second, independent EventSourcingConfigurer) rather than
    isolated unit/contract tests.
-8. `outbox-relay-core` + `outbox-relay-kafka` — unlocks the microservices story.
-9. `examples/microservices-sample` — proves the full stack composes correctly
-   across bounded contexts.
-10. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-rabbitmq`,
+8. ~~`outbox-relay-core`~~ — DONE (polling engine, Publisher/DeadLetterSink SPIs,
+   JdbcRelayPositionStore).
+9. ~~`outbox-relay-rabbitmq`~~ — DONE, built ahead of `outbox-relay-kafka`:
+   simpler ops (no cluster) fits Highkeen's typical self-hosted/single-team
+   deployment targets better, and there's no architectural dependency
+   forcing a specific transport order since `outbox-relay-core`'s Publisher
+   SPI is fully transport-agnostic. First proof the microservices story
+   works end-to-end (Postgres -> OutboxRelay -> RabbitMQ -> a real
+   consumer), not just each piece in isolation. `outbox-relay-kafka` —
+   NOT STARTED.
+10. `examples/microservices-sample` — proves the full stack composes correctly
+    across bounded contexts.
+11. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
     `outbox-relay-webhook`, `bootstrap-axon-mysql`, `bootstrap-axon-mongo` —
     fill in once the pattern is validated once.
-11. `integrations/eventstore-<future-framework>` — only if/when a second
+12. `integrations/eventstore-<future-framework>` — only if/when a second
     framework actually becomes relevant. Not speculative work until then.
 
 ## Open questions worth deciding before writing more code

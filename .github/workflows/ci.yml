@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  boundary-check:
+    name: Architectural boundary checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No io.axoniq.framework anywhere in the repo
+        shell: bash
+        run: |
+          if grep -rn "io.axoniq.framework" \
+              --include="*.java" --include="pom.xml" \
+              --exclude-dir=.git --exclude-dir=target .; then
+            echo "::error::Found io.axoniq.framework reference(s) above — only org.axonframework (Apache 2.0) is allowed, see CLAUDE.md"
+            exit 1
+          fi
+          echo "OK: no io.axoniq.framework references found."
+
+      - name: No org.axonframework inside eventstore-core or any eventstore-<provider> module
+        shell: bash
+        run: |
+          violations=0
+          for dir in eventstore-*/; do
+            dir="${dir%/}"
+            if [ -d "$dir/src" ] && grep -rln "org.axonframework" "$dir/src" --include="*.java"; then
+              echo "::error::org.axonframework import found inside $dir/src — framework coupling only belongs in integrations/eventstore-<framework>, see docs/ARCHITECTURE.md"
+              violations=1
+            fi
+          done
+          if [ "$violations" -ne 0 ]; then
+            exit 1
+          fi
+          echo "OK: no org.axonframework references inside eventstore-core or eventstore-<provider> modules."
+
+      - name: No org.springframework outside the Spring-specific modules
+        shell: bash
+        run: |
+          dirs_to_check=()
+          for d in eventstore-*/; do
+            dirs_to_check+=("${d%/}/src")
+          done
+          for d in integrations/*/; do
+            dirs_to_check+=("${d%/}/src")
+          done
+          for d in bootstrap-*/; do
+            dirs_to_check+=("${d%/}/src")
+          done
+          dirs_to_check+=("outbox-relay-core/src")
+
+          violations=0
+          for dir in "${dirs_to_check[@]}"; do
+            if [ -d "$dir" ] && grep -rln "org.springframework" "$dir" --include="*.java"; then
+              echo "::error::org.springframework import found inside $dir — Spring coupling only belongs in *-spring-boot-starter / *-spring-boot-routing modules, see docs/CONVENTIONS.md"
+              violations=1
+            fi
+          done
+          if [ "$violations" -ne 0 ]; then
+            exit 1
+          fi
+          echo "OK: no org.springframework references outside the Spring-specific modules."
+
+  build:
+    name: Build and test (full reactor)
+    needs: boundary-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Confirm Docker is available (required for Testcontainers)
+        run: docker version
+
+      - name: Build and test full reactor
+        run: mvn -B clean install

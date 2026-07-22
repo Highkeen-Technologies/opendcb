@@ -134,8 +134,13 @@ Multiple instances scale via the shared `JdbcTokenStore` — no broker.
 `eventstore-*` internally. `outbox-relay-core` + one transport module is the
 only thing crossing a bounded-context boundary, and only ever publishes a
 deliberately-shaped integration event — never the internal domain event
-payload directly. See @docs/PROVIDERS.md for adapter-specific detail and
-@docs/ROADMAP.md for current module status.
+payload directly. `OutboxRelay`'s optional `Predicate<StoredEvent>` filter is
+the mechanism that enforces this: a service supplies a filter matching only
+its public/integration event types, and everything else — including its rich
+internal domain events — simply never matches, so it's skipped (position
+still advances past it) rather than published. Internal events stay internal
+by construction, with no separate mechanism needed. See @docs/PROVIDERS.md
+for adapter-specific detail and @docs/ROADMAP.md for current module status.
 
 ## Package convention
 
