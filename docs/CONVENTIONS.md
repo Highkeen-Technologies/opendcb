@@ -26,10 +26,11 @@
   between minor versions — assume nothing from memory or from older Axon 4.x
   knowledge.
 - When an implementation makes a deliberate simplification versus what
-  "real" framework-integrated code would do (e.g. bypassing Axon's
-  `Converter`/upcaster SPI for direct Jackson serialization), document it
-  explicitly in the class Javadoc, not just in a comment buried in the
-  method body.
+  "real" framework-integrated code would do (e.g. `integrations/eventstore-axon`
+  not applying an upcaster, since Axon Framework 5.1.2 has no released
+  upcaster/`IntermediateEventRepresentation` SPI to wire up — see
+  @docs/ROADMAP.md's open questions), document it explicitly in the class
+  Javadoc, not just in a comment buried in the method body.
 
 ## Adding support for a new framework
 

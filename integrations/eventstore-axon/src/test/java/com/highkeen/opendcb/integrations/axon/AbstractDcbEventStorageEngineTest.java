@@ -15,9 +15,9 @@
  */
 package com.highkeen.opendcb.integrations.axon;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.highkeen.opendcb.eventstore.core.EventStoreStorage;
 import com.highkeen.opendcb.eventstore.core.StoredEvent;
+import org.axonframework.conversion.jackson.JacksonConverter;
 import org.axonframework.eventsourcing.eventstore.AppendCondition;
 import org.axonframework.eventsourcing.eventstore.AppendEventsTransactionRejectedException;
 import org.axonframework.eventsourcing.eventstore.ConsistencyMarker;
@@ -57,7 +57,7 @@ class AbstractDcbEventStorageEngineTest {
 
     private final InMemoryEventStoreStorage storage = new InMemoryEventStoreStorage();
     private final AbstractDcbEventStorageEngine engine =
-            new AbstractDcbEventStorageEngine(storage, new ObjectMapper());
+            new AbstractDcbEventStorageEngine(storage, new JacksonConverter());
 
     @Test
     void appendEvents_persistsThroughStorage_andYieldsConsistencyMarker() throws Exception {

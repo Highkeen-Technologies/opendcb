@@ -15,12 +15,12 @@
  */
 package com.highkeen.opendcb.integrations.axon;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.highkeen.opendcb.eventstore.core.EventStoreStorage;
 import com.highkeen.opendcb.eventstore.core.StoredEvent;
 import com.highkeen.opendcb.eventstore.core.StoredEvent.StoredTag;
 import org.axonframework.common.infra.ComponentDescriptor;
+import org.axonframework.conversion.ConversionException;
+import org.axonframework.conversion.Converter;
 import org.axonframework.eventsourcing.eventstore.AppendCondition;
 import org.axonframework.eventsourcing.eventstore.AppendEventsTransactionRejectedException;
 import org.axonframework.eventsourcing.eventstore.ConsistencyMarker;
@@ -70,14 +70,19 @@ import java.util.stream.Collectors;
  * TaggedEventMessage}, {@link AppendCondition}, {@link ConsistencyMarker}, {@link MessageStream},
  * {@link EventsCondition}) and {@link StoredEvent}.
  *
- * <h2>Deliberate simplification: payload (de)serialization</h2>
+ * <h2>Payload (de)serialization</h2>
  *
- * <p>Payloads are (de)serialized directly with Jackson's {@link ObjectMapper}, keyed by the
- * payload's fully-qualified class name (stored as {@link StoredEvent#payloadClass()}). Axon's own
- * {@code Converter}/upcaster SPI is deliberately bypassed for now. This means schema evolution
- * (renaming a payload class, restructuring its fields) is not supported out of the box — a
- * production deployment that needs upcasting should wire Axon's real {@code Converter} instead of
- * relying on this class's Jackson usage.
+ * <p>Payloads are (de)serialized via Axon's real {@link Converter} SPI — {@code
+ * converter.convert(payload, String.class)} on write, {@code converter.convert(json,
+ * payloadClass)} on read — keyed by the payload's fully-qualified class name (stored as {@link
+ * StoredEvent#payloadClass()}). No upcaster is applied: as of Axon Framework 5.1.2, the only
+ * upcaster/{@code IntermediateEventRepresentation} mechanism in the framework's own source lives in
+ * its unreleased {@code axon-todo} module (not part of {@code axon-framework-bom}, and documented by
+ * Axon's own maintainers as "not to be released code that should be upgraded to current
+ * standards") — there is no released SPI to wire up yet. See {@code docs/ROADMAP.md}'s open
+ * questions section for the grounding behind this. Schema evolution (renaming a payload class,
+ * restructuring its fields) is therefore still unsupported; revisit once Axon ships a released
+ * transformation/upcaster mechanism.
  *
  * <h2>Deliberate simplification: position/marker numbering</h2>
  *
@@ -104,11 +109,11 @@ public class AbstractDcbEventStorageEngine implements EventStorageEngine {
     private static final int STREAMING_BATCH_SIZE = 256;
 
     private final EventStoreStorage storage;
-    private final ObjectMapper objectMapper;
+    private final Converter converter;
 
-    public AbstractDcbEventStorageEngine(EventStoreStorage storage, ObjectMapper objectMapper) {
+    public AbstractDcbEventStorageEngine(EventStoreStorage storage, Converter converter) {
         this.storage = Objects.requireNonNull(storage, "storage must not be null");
-        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
+        this.converter = Objects.requireNonNull(converter, "converter must not be null");
     }
 
     @Override
@@ -233,8 +238,8 @@ public class AbstractDcbEventStorageEngine implements EventStorageEngine {
         String payloadClass = payload != null ? payload.getClass().getName() : null;
         String payloadJson;
         try {
-            payloadJson = objectMapper.writeValueAsString(payload);
-        } catch (JsonProcessingException e) {
+            payloadJson = payload != null ? converter.convert(payload, String.class) : null;
+        } catch (ConversionException e) {
             throw new IllegalStateException(
                     "Failed to serialize payload of event [" + event.identifier() + "] to JSON.", e);
         }
@@ -268,8 +273,8 @@ public class AbstractDcbEventStorageEngine implements EventStorageEngine {
         }
         try {
             Class<?> payloadType = Class.forName(storedEvent.payloadClass());
-            return objectMapper.readValue(storedEvent.payloadJson(), payloadType);
-        } catch (ClassNotFoundException | JsonProcessingException e) {
+            return converter.convert(storedEvent.payloadJson(), payloadType);
+        } catch (ClassNotFoundException | ConversionException e) {
             throw new IllegalStateException(
                     "Failed to deserialize payload of event [" + storedEvent.eventId() + "] with declared class ["
                             + storedEvent.payloadClass() + "].", e);

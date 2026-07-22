@@ -15,10 +15,10 @@
  */
 package com.highkeen.opendcb.bootstrap.axon.postgres;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.highkeen.opendcb.eventstore.postgres.PostgresEventStoreStorage;
 import com.highkeen.opendcb.integrations.axon.AbstractDcbEventStorageEngine;
+import org.axonframework.conversion.Converter;
+import org.axonframework.conversion.jackson.JacksonConverter;
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine;
 
 import javax.sql.DataSource;
@@ -57,11 +57,25 @@ public final class OpenDcbAxonPostgres {
      * @return a ready-to-use {@link EventStorageEngine}.
      */
     public static EventStorageEngine engine(DataSource dataSource, boolean autoCreateSchema) {
+        return engine(dataSource, autoCreateSchema, new JacksonConverter());
+    }
+
+    /**
+     * Builds an {@link EventStorageEngine} backed by PostgreSQL, using the given {@link Converter} for payload
+     * (de)serialization instead of the default {@link JacksonConverter}.
+     *
+     * @param dataSource      the {@link DataSource} to connect to PostgreSQL with.
+     * @param autoCreateSchema whether to create the {@code events}/{@code event_tags} schema if it does not already
+     *                         exist. Set to {@code false} when schema management is handled externally (e.g. via a
+     *                         migration tool).
+     * @param converter        the {@link Converter} used to (de)serialize event payloads.
+     * @return a ready-to-use {@link EventStorageEngine}.
+     */
+    public static EventStorageEngine engine(DataSource dataSource, boolean autoCreateSchema, Converter converter) {
         PostgresEventStoreStorage storage = new PostgresEventStoreStorage(dataSource);
         if (autoCreateSchema) {
             storage.ensureSchema();
         }
-        ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
-        return new AbstractDcbEventStorageEngine(storage, objectMapper);
+        return new AbstractDcbEventStorageEngine(storage, converter);
     }
 }

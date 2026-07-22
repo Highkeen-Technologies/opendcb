@@ -66,7 +66,11 @@ opendcb/
 │   │   EventStoreStorage test double. Now also proven wired up against a
 │   │   real provider: bootstrap-axon-postgres exercises eventstore-axon +
 │   │   eventstore-postgres together end-to-end against a real Postgres 16
-│   │   Testcontainers instance — that integration gap is closed.
+│   │   Testcontainers instance — that integration gap is closed. Payload
+│   │   (de)serialization uses Axon's real Converter SPI (JacksonConverter)
+│   │   rather than an ad-hoc ObjectMapper; no upcaster is applied, since
+│   │   Axon 5.1.2 has no released upcaster SPI to wire up (see the open
+│   │   questions section below).
 │   │   Depends on: eventstore-core, org.axonframework.
 │   │
 │   └── eventstore-<future-framework>/
@@ -327,7 +331,11 @@ events).
   (`eventstore-core`, providers) could version independently from
   `integrations/eventstore-axon`, since they don't actually depend on Axon's
   release cadence.
-- **Schema evolution:** `integrations/eventstore-axon` currently uses
-  Jackson directly rather than Axon's `Converter`/upcaster SPI (documented
-  as a deliberate simplification). Worth deciding now whether the toolkit
-  commits to wiring the real `Converter` SPI before v1.0.
+- **Schema evolution:** RESOLVED (partially) — `integrations/eventstore-axon`
+  now uses Axon's real `Converter` SPI (`JacksonConverter`) for payload
+  (de)serialization instead of an ad-hoc `ObjectMapper`. Upcasting remains
+  unresolved and blocked: Axon Framework 5.1.2 ships no released upcaster/
+  `IntermediateEventRepresentation` SPI — the only such code lives in its
+  own unreleased `axon-todo` module, explicitly documented by Axon's
+  maintainers as "not to be released code." Revisit once Axon ships a real,
+  released transformation/upcaster mechanism.
