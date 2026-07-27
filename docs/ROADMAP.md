@@ -78,6 +78,24 @@ opendcb/
 │       Same shape as eventstore-axon. eventstore-postgres/mysql/mongo need
 │       zero changes to support it.
 │
+├── opendcb-axon-scheduling/
+│   OpenDCB's OWN abstraction for scheduled/deferred command dispatch and
+│   deadline detection — NOT an implementation of Axon's DeadlineManager/
+│   EventScheduler, since neither the interface nor any implementation is
+│   published in any org.axonframework artifact (verified: both exist only
+│   in Axon's own internal, explicitly-not-to-be-released axon-todo module —
+│   same unreleased status as the upcaster SPI, but with no free interface
+│   to target at all, unlike upcasting). See docs/ARCHITECTURE.md's
+│   "opendcb-axon-scheduling" section for the full rationale on why this is
+│   a new abstraction rather than an Axon SPI implementation.
+│   A scheduled_command table (own schema, independent of EventStoreStorage
+│   entirely) + a poller (structurally similar to OutboxRelay, but
+│   dispatching due commands via Axon's real, free CommandGateway instead of
+│   publishing to a transport).
+│   Status: NOT STARTED. Depends on: org.axonframework (CommandGateway only)
+│   + JDBC — deliberately NOT on eventstore-core, since it has no need to
+│   read/write the event log itself.
+│
 ├── opendcb-axon-spring-boot-routing/
 │   Wires Axon's own free JdbcTokenStore against whichever eventstore-*
 │   datasource is active, so PooledStreamingEventProcessor segments can be
@@ -117,6 +135,10 @@ opendcb/
 │   (mirroring eventstore-postgres's advisory-lock race test), asserting
 │   succeededA ^ succeededB — exactly one of the two simultaneous claims
 │   succeeds.
+│   Licensing check: verified JdbcTokenStore resolves exclusively to
+│   org.axonframework, Apache 2.0, confirmed via dependency tree + JAR
+│   manifest + GitHub source + Maven Central search for io.axoniq.framework
+│   (zero results) — no rework needed, no licensing conflict.
 │   Depends on: eventstore-core, integrations/eventstore-axon.
 │
 ├── outbox-relay-core/
@@ -260,7 +282,49 @@ opendcb/
     │   times), proving durability rather than in-memory carryover between configurers.
     │   Depends on: bootstrap-axon-postgres, postgresql driver (compile scope — this is a
     │   standalone app, not a library, so unlike eventstore-postgres the driver isn't provided).
-    └── microservices-sample/  (NOT STARTED)
+    └── microservices-sample/  Two modules, orders-service and shipping-service, each with
+        its own eventstore-postgres database — outbox-relay-rabbitmq is the only thing
+        crossing the bounded-context boundary. orders-service's PlaceOrder command appends
+        both OrderPlaced (internal) and OrderPlacedIntegrationEvent (public) atomically;
+        OrdersService.integrationRelay's Predicate<StoredEvent> only matches the integration
+        event type, so OrderPlaced is skipped by the relay rather than published.
+        shipping-service's IntegrationEventConsumer reads off a real RabbitMQ queue and
+        hands the raw envelope to OrderPlacedIntegrationEventTranslator, an anti-corruption
+        layer that dispatches a local CreateShipmentCommand rather than treating the
+        incoming payload as its own domain event.
+        Status: DONE — root pom.xml wires in both orders-service and shipping-service as
+        modules; `mvn clean install` from repo root builds all 12 modules and passes every
+        test, including both of shipping-service's:
+        - `OrderPlacedIntegrationEventTranslatorConcurrentRedeliveryTest.concurrentRedeliveryOfTheSameIntegrationEventProducesExactlyOneShipment`
+          proves the redelivery dedup is race-proof, not just sequentially correct: two
+          independent OrderPlacedIntegrationEventTranslator instances (standing in for two
+          consumer threads/JVMs) translate the identical envelope at the same instant via a
+          CountDownLatch start gate — the same pattern as eventstore-postgres's advisory-lock
+          conflict test and JdbcTokenStoreClaimConflictTest. The translator has no
+          check-then-act: `tryMarkProcessed` attempts `INSERT INTO
+          processed_integration_events (event_id)` directly and treats a `23505`
+          (unique-violation) SQLState as "already processed" instead of a separate `SELECT`
+          first, so Postgres's own primary-key constraint serializes the race — the test
+          asserts exactly 1 `ShipmentCreated` event resulted, not 0 or 2.
+        - `OrdersToShippingEndToEndTest.orderPlacedInOrdersServiceResultsInExactlyOneShipmentInShippingServiceAndNeverRelaysTheInternalEvent`
+          runs against two real Postgres 16 Testcontainers instances (one per service) plus a
+          real RabbitMQ 3.13 Testcontainers instance — no in-memory doubles. Dispatches
+          PlaceOrder via orders-service's own CommandGateway, asserts its store holds exactly
+          2 events (OrderPlaced + OrderPlacedIntegrationEvent), runs OutboxRelay.runOnce()
+          once against the real RabbitMqPublisher, and asserts a test subscriber bound to the
+          same exchange/routing key as shipping-service's own consumer receives exactly one
+          message whose `payloadClass` is `OrderPlacedIntegrationEvent` — then asserts
+          polling again for 1s returns null, proving the internal `OrderPlaced` event never
+          crosses the boundary. Confirms exactly one `ShipmentCreated` lands in
+          shipping-service's own database, re-sources the shipment from a second, brand-new
+          AxonConfiguration/StateManager against that same database (orderId/customerId
+          match, proving durability rather than in-memory carryover), then republishes the
+          identical envelope bytes a second time to simulate broker redelivery and asserts
+          the shipment count never exceeds 1 over a 3-second window.
+        Depends on: eventstore-postgres, integrations/eventstore-axon,
+        bootstrap-axon-postgres, outbox-relay-core, outbox-relay-rabbitmq (shipping-service
+        consumes with the plain com.rabbitmq:amqp-client directly, matching
+        outbox-relay-rabbitmq's own no-Spring-AMQP convention).
 ```
 
 ## The two usage patterns this needs to support
@@ -313,12 +377,24 @@ events).
    works end-to-end (Postgres -> OutboxRelay -> RabbitMQ -> a real
    consumer), not just each piece in isolation. `outbox-relay-kafka` —
    NOT STARTED.
-10. `examples/microservices-sample` — proves the full stack composes correctly
-    across bounded contexts.
-11. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
+10. ~~`examples/microservices-sample`~~ — DONE. Proves the full cross-bounded-context
+    story from end to end with real infrastructure (two Postgres containers, one
+    RabbitMQ container, no in-memory doubles): orders-service places an order,
+    outbox-relay-rabbitmq relays only the public integration event (never the
+    internal domain event), and shipping-service's translator dispatches a local
+    command idempotently, including under true concurrent redelivery.
+11. `opendcb-axon-scheduling` — new module, not yet started. Solves
+    scheduled/deferred command dispatch and deadline detection as OpenDCB's
+    own abstraction, since neither Axon's DeadlineManager/EventScheduler
+    interfaces nor any implementation are published in any org.axonframework
+    artifact (confirmed via direct source/Maven Central verification — see
+    docs/ARCHITECTURE.md). Structurally similar to outbox-relay-core (own
+    table + poller) but dispatches via CommandGateway instead of publishing
+    to a transport, and has no dependency on eventstore-core.
+12. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
     `outbox-relay-webhook`, `bootstrap-axon-mysql`, `bootstrap-axon-mongo` —
     fill in once the pattern is validated once.
-12. `integrations/eventstore-<future-framework>` — only if/when a second
+13. `integrations/eventstore-<future-framework>` — only if/when a second
     framework actually becomes relevant. Not speculative work until then.
 
 ## Open questions worth deciding before writing more code

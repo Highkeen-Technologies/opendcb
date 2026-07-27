@@ -23,6 +23,10 @@ and keeps the framework-agnostic layer honestly agnostic.
 3. integrations/eventstore-axon              depends on: eventstore-core + org.axonframework
    integrations/eventstore-<other>           depends on: eventstore-core + that framework
                                               (hypothetical — added only if/when needed)
+3b. opendcb-axon-scheduling                  depends on: org.axonframework only (CommandGateway)
+                                              + JDBC (own scheduled_command table — independent
+                                              of eventstore-core/EventStoreStorage entirely; see
+                                              "opendcb-axon-scheduling" section below for why)
 4. opendcb-axon-spring-boot-routing          depends on: eventstore-core, integrations/eventstore-axon
                                               (Axon-specific: token store / segment routing concepts
                                               don't generalize across frameworks — a different
@@ -89,6 +93,42 @@ a real Postgres instance, not just in isolation.
   its own routing module; there is no shared abstraction possible here.
 - Everything under `outbox-relay-*` stays framework-agnostic regardless,
   since it only reads from `EventStoreStorage` directly.
+
+## opendcb-axon-scheduling: OpenDCB's own abstraction, not an Axon SPI
+
+Axon 4 Community shipped `DeadlineManager`/`EventScheduler` for free — "run
+this command at a future time," "detect a deadline was missed." In Axon 5,
+per AxonIQ's own published feature comparison, both are Axoniq Framework
+(paid) only. Verified directly against the released source (not just the
+marketing page): neither the interfaces nor any implementation
+(`SimpleDeadlineManager`, `QuartzDeadlineManager`, `SimpleEventScheduler`,
+etc.) exist in any published `org.axonframework` artifact — they live only
+in Axon's own internal `axon-todo` module, explicitly marked by Axon's
+maintainers as "not to be released code."
+
+This is a materially different situation from the upcaster gap
+(@docs/ROADMAP.md's open questions): there, an Axon SPI genuinely exists
+but is unreleased, so building against it would mean guessing at a moving
+target. Here, there is no SPI at all to target — free or paid, released or
+not. That means `opendcb-axon-scheduling` is **not** an implementation of
+any Axon interface, and must never be named or documented as if it were.
+It's OpenDCB's own abstraction (its own class names — e.g.
+`ScheduledCommandStore`, `ScheduledCommandDispatcher`, never anything
+implying it's Axon's `DeadlineManager`/`EventScheduler`), solving the same
+class of problem, integrating with Axon only at the one point where it
+dispatches a due command via Axon's real, free `CommandGateway` — core
+message-dispatch functionality, not part of what's paywalled.
+
+Because it never touches `EventStoreStorage` or any provider — it owns a
+separate `scheduled_command` table entirely independent of the event
+store — it doesn't belong under `eventstore-*` or `integrations/*` at all.
+It sits beside `integrations/eventstore-axon` in the dependency order,
+depending only on `org.axonframework` (for `CommandGateway`) and plain JDBC.
+
+If Axon ever publishes a real, released interface for this, revisit
+whether `opendcb-axon-scheduling` should adapt to it — but do not
+preemptively shape this module's API to guess what that interface might
+look like.
 
 ## Bootstrap modules: zero-boilerplate wiring without requiring Spring
 
@@ -160,6 +200,7 @@ first, `-spring-boot-...` is the suffix.
 | `eventstore-mysql` | `com.highkeen.opendcb.eventstore.mysql` |
 | `eventstore-mongo` | `com.highkeen.opendcb.eventstore.mongo` |
 | `integrations/eventstore-axon` | `com.highkeen.opendcb.integrations.axon` |
+| `opendcb-axon-scheduling` | `com.highkeen.opendcb.scheduling.axon` |
 | `opendcb-axon-spring-boot-routing` | `com.highkeen.opendcb.routing.axon.springboot` |
 | `outbox-relay-core` | `com.highkeen.opendcb.relay.core` |
 | `outbox-relay-kafka` | `com.highkeen.opendcb.relay.kafka` |
