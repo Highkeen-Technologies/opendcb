@@ -23,10 +23,6 @@ and keeps the framework-agnostic layer honestly agnostic.
 3. integrations/eventstore-axon              depends on: eventstore-core + org.axonframework
    integrations/eventstore-<other>           depends on: eventstore-core + that framework
                                               (hypothetical — added only if/when needed)
-3b. opendcb-axon-scheduling                  depends on: org.axonframework only (CommandGateway)
-                                              + JDBC (own scheduled_command table — independent
-                                              of eventstore-core/EventStoreStorage entirely; see
-                                              "opendcb-axon-scheduling" section below for why)
 4. opendcb-axon-spring-boot-routing          depends on: eventstore-core, integrations/eventstore-axon
                                               (Axon-specific: token store / segment routing concepts
                                               don't generalize across frameworks — a different
@@ -34,6 +30,12 @@ and keeps the framework-agnostic layer honestly agnostic.
 5. outbox-relay-core                         depends on: eventstore-core only
                                               (framework-agnostic: it just tails
                                               EventStoreStorage.readRange)
+5b. opendcb-scheduling-core                  depends on: eventstore-core only
+                                              (framework-agnostic, same shape as outbox-relay-core —
+                                              see "opendcb-scheduling-core" section below; NOT
+                                              Axon-specific despite earlier drafts of this module,
+                                              since firing a scheduled event is just appending via
+                                              EventStoreStorage — no Axon dependency needed at all)
 6. outbox-relay-kafka                        depends on: outbox-relay-core
    outbox-relay-rabbitmq                     depends on: outbox-relay-core
    outbox-relay-webhook                      depends on: outbox-relay-core
@@ -93,42 +95,103 @@ a real Postgres instance, not just in isolation.
   its own routing module; there is no shared abstraction possible here.
 - Everything under `outbox-relay-*` stays framework-agnostic regardless,
   since it only reads from `EventStoreStorage` directly.
+- `opendcb-scheduling-core` is likewise framework-agnostic — see below.
 
-## opendcb-axon-scheduling: OpenDCB's own abstraction, not an Axon SPI
+## opendcb-scheduling-core: schedules events, not commands — matching Axon's own design, and framework-agnostic as a result
 
-Axon 4 Community shipped `DeadlineManager`/`EventScheduler` for free — "run
-this command at a future time," "detect a deadline was missed." In Axon 5,
-per AxonIQ's own published feature comparison, both are Axoniq Framework
-(paid) only. Verified directly against the released source (not just the
-marketing page): neither the interfaces nor any implementation
-(`SimpleDeadlineManager`, `QuartzDeadlineManager`, `SimpleEventScheduler`,
-etc.) exist in any published `org.axonframework` artifact — they live only
-in Axon's own internal `axon-todo` module, explicitly marked by Axon's
-maintainers as "not to be released code."
+**Design history worth keeping, since it explains a real pivot:** the first
+draft of this module scheduled *commands* (`ScheduledCommandStore`,
+dispatched via Axon's `CommandGateway`), reasoning that re-validating
+business rules at fire time is safer in a DCB system than committing to a
+decision far in advance. That reasoning wasn't wrong, but it diverged from
+what Axon itself has always done — verified directly against two
+independent sources: Axon 4's `EventScheduler` (legacy reference-guide,
+superseded Oct 2024) explicitly schedules a raw event (its own example:
+"schedule an `InvoicePaymentDeadlineExpiredEvent` to be published in 30
+days"), and Axon 5's real, current `DcbEventChannel.scheduleEvent(Instant,
+Event)` (in the free `io.axoniq:axonserver-connector-java`, confirmed via
+source) takes an `Event` parameter too. Same model, both versions — a
+deliberate, consistent design choice by AxonIQ, not an artifact of an older
+API. That consistency is a strong enough signal to follow their pattern
+rather than diverge from it.
 
-This is a materially different situation from the upcaster gap
-(@docs/ROADMAP.md's open questions): there, an Axon SPI genuinely exists
-but is unreleased, so building against it would mean guessing at a moving
-target. Here, there is no SPI at all to target — free or paid, released or
-not. That means `opendcb-axon-scheduling` is **not** an implementation of
-any Axon interface, and must never be named or documented as if it were.
-It's OpenDCB's own abstraction (its own class names — e.g.
-`ScheduledCommandStore`, `ScheduledCommandDispatcher`, never anything
-implying it's Axon's `DeadlineManager`/`EventScheduler`), solving the same
-class of problem, integrating with Axon only at the one point where it
-dispatches a due command via Axon's real, free `CommandGateway` — core
-message-dispatch functionality, not part of what's paywalled.
+**The pivot turned out to simplify the architecture, not just rename it.**
+Firing a scheduled event means appending it to the log — and appending is
+exactly what `EventStoreStorage` (`eventstore-core`) already does. There's
+no need to route through Axon's command handling at all. So this module
+needs **zero dependency on `org.axonframework`** — it depends only on
+`eventstore-core`, the same shape as `outbox-relay-core`. Renamed
+accordingly: `opendcb-scheduling-core`, not `opendcb-axon-scheduling` —
+dropping "-axon" because it genuinely isn't Axon-specific anymore.
 
-Because it never touches `EventStoreStorage` or any provider — it owns a
-separate `scheduled_command` table entirely independent of the event
-store — it doesn't belong under `eventstore-*` or `integrations/*` at all.
-It sits beside `integrations/eventstore-axon` in the dependency order,
-depending only on `org.axonframework` (for `CommandGateway`) and plain JDBC.
+**What replaces the re-validation-at-fire-time safety this pivot gives
+up:** nothing stops a scheduled event's downstream event handler from
+checking "is this still relevant?" before acting — that check simply moves
+to the *consumer* side instead of blocking the append. Arguably this is
+more aligned with event-sourcing philosophy anyway: the event ("a deadline
+passed") is a fact that occurred; what to *do* about it is a separate
+decision made by whoever handles it, not baked into whether the fact gets
+recorded at all.
 
-If Axon ever publishes a real, released interface for this, revisit
-whether `opendcb-axon-scheduling` should adapt to it — but do not
-preemptively shape this module's API to guess what that interface might
-look like.
+**An additional, DCB-native safety net worth building in (optional, not
+mandatory):** since `EventStoreStorage.appendAtomically` already takes a
+conflict predicate, `opendcb-scheduling-core` can let the caller supply
+one at schedule time — e.g. "don't append `InvoicePaymentDeadlineExpiredEvent`
+if an `InvoicePaidEvent` for this invoice already exists." If the predicate
+matches, the scheduled append is skipped rather than forced through. This
+gives DCB-aware cancellation *in addition to* the explicit
+`cancel(scheduleId)` call, for cases where "this is no longer valid" is
+easier to express as "check the log" than "remember to call cancel."
+Optional because not every scheduled event needs this — a plain reminder
+notification has no real conflict to check for.
+
+Components, own table (`scheduled_event`, independent of the event log's
+own tables):
+
+- `ScheduledEventStore` — owns the table: `schedule(...)`, `cancel(...)`,
+  and `claimDue(...)` (lease-based, same cross-JVM-safe `SELECT ... FOR
+  UPDATE SKIP LOCKED` + expiring-lease-reclaim design as before — see
+  @docs/ROADMAP.md for the exact schema/columns).
+- `ScheduledEventDispatcher` — the poller: claims due rows, builds a
+  `StoredEvent` from the stored payload/tags, calls
+  `EventStoreStorage.appendAtomically(...)` (optionally with the
+  caller-supplied conflict predicate above), marks the row complete on
+  success.
+
+If Axon ever publishes a real, released interface for event scheduling in
+`org.axonframework` itself (as opposed to only inside Axon Server), revisit
+whether to adapt `opendcb-scheduling-core` to it — but don't preemptively
+shape its API to guess what that interface might look like.
+
+### Known alternative: `io.axoniq:axonserver-connector-java` (not adopted here, documented for context)
+
+Verified directly against the actual repo (github.com/AxonIQ/axonserver-connector-java):
+its `DcbEventChannel` interface has real, working `scheduleEvent(Instant, Event)`,
+`cancelSchedule(String)`, and `reschedule(String, Instant, Event)` methods —
+genuine, free, Apache 2.0 Java client code, under the groupId `io.axoniq`
+(**not** `io.axoniq.framework`, the paid tier this project excludes
+everywhere else per @docs/CONVENTIONS.md).
+
+This is not a contradiction of the reasoning above — it's a different
+axis entirely. These methods work by calling **Axon Server's** own
+`DcbEventScheduler` gRPC service. The connector client is free; **Axon
+Server itself — the server being connected to — is the thing with
+licensing tiers** (SE free/single-node vs. EE paid), the same pattern
+already confirmed for `JdbcTokenStore`. Adopting this connector would mean
+running Axon Server specifically for scheduling, while everything else in
+a monolithic/microservices OpenDCB deployment stays on a self-hosted
+Postgres-backed `eventstore-postgres` — an awkward two-backend
+architecture, not a simplification, and it reintroduces exactly the Axon
+Server dependency `eventstore-postgres` exists to avoid.
+
+**For the record, not a recommendation to build against:** if a team's
+deployment already runs Axon Server (having made that separate licensing
+decision on its own merits), `DcbEventChannel.scheduleEvent(...)` gives
+them real, free-client scheduling against it today, with no need for
+`opendcb-scheduling-core` at all. `opendcb-scheduling-core` is the
+equivalent capability specifically for teams on OpenDCB's self-hosted,
+no-Axon-Server stack — and, being framework-agnostic, works for any
+future `integrations/eventstore-<framework>` too, not just Axon.
 
 ## Bootstrap modules: zero-boilerplate wiring without requiring Spring
 
@@ -200,9 +263,9 @@ first, `-spring-boot-...` is the suffix.
 | `eventstore-mysql` | `com.highkeen.opendcb.eventstore.mysql` |
 | `eventstore-mongo` | `com.highkeen.opendcb.eventstore.mongo` |
 | `integrations/eventstore-axon` | `com.highkeen.opendcb.integrations.axon` |
-| `opendcb-axon-scheduling` | `com.highkeen.opendcb.scheduling.axon` |
 | `opendcb-axon-spring-boot-routing` | `com.highkeen.opendcb.routing.axon.springboot` |
 | `outbox-relay-core` | `com.highkeen.opendcb.relay.core` |
+| `opendcb-scheduling-core` | `com.highkeen.opendcb.scheduling.core` |
 | `outbox-relay-kafka` | `com.highkeen.opendcb.relay.kafka` |
 | `outbox-relay-rabbitmq` | `com.highkeen.opendcb.relay.rabbitmq` |
 | `outbox-relay-webhook` | `com.highkeen.opendcb.relay.webhook` |

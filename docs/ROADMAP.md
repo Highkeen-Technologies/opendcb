@@ -78,23 +78,84 @@ opendcb/
 │       Same shape as eventstore-axon. eventstore-postgres/mysql/mongo need
 │       zero changes to support it.
 │
-├── opendcb-axon-scheduling/
-│   OpenDCB's OWN abstraction for scheduled/deferred command dispatch and
-│   deadline detection — NOT an implementation of Axon's DeadlineManager/
-│   EventScheduler, since neither the interface nor any implementation is
-│   published in any org.axonframework artifact (verified: both exist only
-│   in Axon's own internal, explicitly-not-to-be-released axon-todo module —
-│   same unreleased status as the upcaster SPI, but with no free interface
-│   to target at all, unlike upcasting). See docs/ARCHITECTURE.md's
-│   "opendcb-axon-scheduling" section for the full rationale on why this is
-│   a new abstraction rather than an Axon SPI implementation.
-│   A scheduled_command table (own schema, independent of EventStoreStorage
-│   entirely) + a poller (structurally similar to OutboxRelay, but
-│   dispatching due commands via Axon's real, free CommandGateway instead of
-│   publishing to a transport).
-│   Status: NOT STARTED. Depends on: org.axonframework (CommandGateway only)
-│   + JDBC — deliberately NOT on eventstore-core, since it has no need to
-│   read/write the event log itself.
+├── opendcb-scheduling-core/
+│   OpenDCB's OWN abstraction for scheduling events — NOT an implementation
+│   of any Axon interface (none exists, released or otherwise — see
+│   docs/ARCHITECTURE.md's "opendcb-scheduling-core" section for the full
+│   pivot history: this module originally scheduled *commands* via Axon's
+│   CommandGateway, then was redesigned to schedule *events* directly,
+│   matching Axon's own EventScheduler/DcbEventChannel.scheduleEvent
+│   precedent). Firing a scheduled event is just an
+│   EventStoreStorage.appendAtomically call, so this module has ZERO
+│   dependency on org.axonframework — only on eventstore-core, the same
+│   shape as outbox-relay-core.
+│   Status: DONE (core scheduling mechanism — schedule/cancel/lease-based
+│   claim-reclaim/dispatch-by-append). Two things are deliberately deferred
+│   as documented future enhancements, not oversights — see below.
+│   Own scheduled_event table (independent of the event log's own tables):
+│   id (UUID PK), scheduled_time, event_id (unique), message_type,
+│   payload_class, payload_json, metadata_json, tags_json, scope_name,
+│   status (PENDING/IN_PROGRESS/COMPLETED/CANCELLED), claimed_at, worker_id,
+│   created_at.
+│   ScheduledEventStore.claimDue(now, batchSize, workerId, leaseDuration)
+│   claims due rows cross-JVM-safely with a single
+│   SELECT ... FOR UPDATE SKIP LOCKED WHERE (status = 'PENDING' AND
+│   scheduled_time <= ?) OR (status = 'IN_PROGRESS' AND claimed_at <= ?)
+│   (i.e. lease-expired), then a batched UPDATE to IN_PROGRESS in the same
+│   transaction — grounded in real Postgres MVCC/locking semantics (a
+│   locked row only counts as a SKIP LOCKED candidate if it still matches
+│   WHERE at lock-attempt time; a row another worker already claimed and
+│   committed simply stops matching and is never a candidate), not assumed.
+│   cancel(scheduleId) is a safe no-op unless the row is still PENDING (an
+│   UPDATE ... WHERE status = 'PENDING' guard) — cancelling something
+│   already claimed is a normal race against a concurrent claimDue, not an
+│   error. markCompleted(scheduleId, workerId) guards on
+│   WHERE status = 'IN_PROGRESS' AND worker_id = ? rather than status alone
+│   — a status-only guard would let a worker whose lease already expired and
+│   was reclaimed by another worker overwrite that other worker's in-flight
+│   claim with a stale completion, since the row is IN_PROGRESS again just
+│   under new ownership; fencing on worker_id closes that gap.
+│   ScheduledEventDispatcher polls claimDue, reconstructs a StoredEvent
+│   (position = -1) from each due row, and appends it via
+│   EventStoreStorage.appendAtomically, marking the row COMPLETED only on a
+│   successful append; a failed append is logged and the row left
+│   IN_PROGRESS for a later lease-expiry reclaim rather than reverted or
+│   dead-lettered. start(Duration pollInterval)/stop() use the same daemon
+│   ScheduledExecutorService shape as OutboxRelay.
+│   Tested against a real PostgreSQL 16 Testcontainers instance (via
+│   eventstore-postgres's PostgresEventStoreStorage as the EventStoreStorage
+│   under test): claimDue returns a row only at/after its scheduled_time,
+│   never before; cancel on a still-PENDING row prevents it from ever being
+│   claimed; cancel on an IN_PROGRESS row is a safe no-op (proven by a
+│   subsequent markCompleted still succeeding); a dedicated lease-expiry
+│   test has worker A claim a row with a short lease and never complete it,
+│   sleeps past the lease, then has a second, fully independent
+│   ScheduledEventStore (worker B) reclaim the same row via claimDue, and
+│   confirms worker A's late markCompleted call afterward does not clobber
+│   worker B's active claim; a CountDownLatch ready/go race test (mirroring
+│   eventstore-postgres's and opendcb-axon-spring-boot-routing's concurrent
+│   claim tests) has two independent ScheduledEventStore instances call
+│   claimDue at the same instant against six overlapping due rows plus one
+│   row already claimed with an unexpired lease, asserting zero overlap
+│   between what each instance claims, that the two claimed sets union to
+│   exactly the six due rows, and that neither instance claims the
+│   unexpired-lease row; and an end-to-end ScheduledEventDispatcher test
+│   schedules an event, runs the dispatcher once against a real
+│   PostgresEventStoreStorage, and confirms the event is genuinely readable
+│   back via storage.readRange afterward.
+│   Deliberately deferred (not built in this pass, see
+│   docs/ARCHITECTURE.md's "opendcb-scheduling-core" section):
+│   (1) the optional DCB-native conflict-predicate safety net — letting a
+│   caller supply a real conflictsIfMatched predicate at schedule time so a
+│   scheduled append is skipped if a conflicting event already occurred
+│   (e.g. don't fire InvoicePaymentDeadlineExpiredEvent if InvoicePaidEvent
+│   already exists). ScheduledEventDispatcher currently always appends with
+│   conflictCheckFromPositionExclusive = 0 and a predicate that never
+│   matches, i.e. every fire always succeeds unless the store itself fails.
+│   (2) a retry cap / dead-letter mechanism for permanently-failing appends
+│   — a failed append currently retries indefinitely, roughly once per
+│   leaseDuration, forever, with no cap and no dead-letter sink.
+│   Depends on: eventstore-core only.
 │
 ├── opendcb-axon-spring-boot-routing/
 │   Wires Axon's own free JdbcTokenStore against whichever eventstore-*
@@ -383,14 +444,17 @@ events).
     outbox-relay-rabbitmq relays only the public integration event (never the
     internal domain event), and shipping-service's translator dispatches a local
     command idempotently, including under true concurrent redelivery.
-11. `opendcb-axon-scheduling` — new module, not yet started. Solves
-    scheduled/deferred command dispatch and deadline detection as OpenDCB's
-    own abstraction, since neither Axon's DeadlineManager/EventScheduler
-    interfaces nor any implementation are published in any org.axonframework
-    artifact (confirmed via direct source/Maven Central verification — see
-    docs/ARCHITECTURE.md). Structurally similar to outbox-relay-core (own
-    table + poller) but dispatches via CommandGateway instead of publishing
-    to a transport, and has no dependency on eventstore-core.
+11. ~~`opendcb-scheduling-core`~~ — DONE. Solves scheduled/deferred event
+    firing as OpenDCB's own abstraction, since no Axon interface for this
+    exists, released or otherwise (confirmed via direct source/Maven
+    Central verification — see docs/ARCHITECTURE.md). Structurally similar
+    to `outbox-relay-core` (own table + poller), but fires by *appending*
+    via `EventStoreStorage.appendAtomically` rather than publishing to a
+    transport — so, unlike the original command-dispatch design it
+    replaced, it has zero dependency on `org.axonframework` and depends
+    only on `eventstore-core`. The DCB-native conflict-predicate safety net
+    and a retry-cap/dead-letter mechanism remain deliberately deferred
+    future enhancements (see the module's own status entry above).
 12. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
     `outbox-relay-webhook`, `bootstrap-axon-mysql`, `bootstrap-axon-mongo` —
     fill in once the pattern is validated once.
