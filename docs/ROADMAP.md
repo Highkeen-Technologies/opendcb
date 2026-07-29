@@ -184,17 +184,54 @@ opendcb/
 │   schedules an event, runs the dispatcher once against a real
 │   PostgresEventStoreStorage, and confirms the event is genuinely readable
 │   back via storage.readRange afterward.
-│   Deliberately deferred (not built in this pass, see
-│   docs/ARCHITECTURE.md's "opendcb-scheduling-core" section): the optional
-│   DCB-native conflict-predicate safety net — letting a caller supply a
-│   real conflictsIfMatched predicate at schedule time so a scheduled append
-│   is skipped if a conflicting event already occurred (e.g. don't fire
-│   InvoicePaymentDeadlineExpiredEvent if InvoicePaidEvent already exists).
-│   ScheduledEventDispatcher currently always appends with
-│   conflictCheckFromPositionExclusive = 0 and a predicate that never
-│   matches, i.e. every fire always succeeds unless the store itself fails.
-│   (The retry-cap/dead-letter mechanism that was the other deferred item
-│   here is now DONE — see above.)
+│   DCB-native conflict-predicate safety net (the optional feature deferred
+│   from the initial pass, see docs/ARCHITECTURE.md's
+│   "opendcb-scheduling-core" section) is now DONE too: since a persisted
+│   scheduled_event row can't hold a real java.util.function.Predicate, the
+│   check is instead modeled as ConflictCriteria — a serializable record
+│   (Set<StoredEvent.StoredTag> requiredTags, Set<String> messageTypes,
+│   empty = match any type) stored as a nullable conflict_criteria_json
+│   column (null = no check, fully backward compatible with every existing
+│   schedule(...) overload and pre-existing row). Same spirit as Axon's own
+│   EventCriteria (tags + message types), expressed in this module's own
+│   framework-agnostic terms, zero Axon dependency. schedule(...) gained a
+│   5-arg overload accepting an optional ConflictCriteria; the existing
+│   3-arg and 4-arg overloads delegate down to it with conflictCriteria =
+│   null, unchanged in their own public signature. A new terminal
+│   SKIPPED_CONFLICT status sits alongside PENDING/IN_PROGRESS/COMPLETED/
+│   CANCELLED/DEAD_LETTERED. For each row claimDue returns as claimed,
+│   ScheduledEventDispatcher.runOnce() checks record.conflictCriteria() != 
+│   null before building/appending the event: findConflictingEvent(criteria)
+│   does a paginated, full-scan-plus-in-memory-predicate read via
+│   storage.readRange (batches of 500, same deliberate v1 simplicity
+│   docs/PROVIDERS.md already establishes for provider-side tag filtering —
+│   not a shortcut specific to this feature). If a match is found, the row
+│   is marked SKIPPED_CONFLICT instead of appended and a ConflictSkipSink
+│   is notified with the conflicting event; if none is found, the row fires
+│   exactly as before. ConflictSkipSink (onConflictSkip(ScheduledEventRecord,
+│   StoredEvent conflictingEvent)) plus its default LoggingConflictSkipSink
+│   are a locally-defined mirror of DeadLetterSink's shape but semantically
+│   distinct — LoggingConflictSkipSink logs at INFO, not ERROR, since a
+│   conflict skip is a deliberate by-design outcome, not a failure.
+│   markSkippedConflict(UUID, String workerId) was added to
+│   ScheduledEventStore, sharing its WHERE status = 'IN_PROGRESS' AND
+│   worker_id = ? fencing guard with markCompleted via a common private
+│   updateIfInProgressAndOwned(...) helper — same worker-fencing reasoning
+│   as before: a stale worker's late skip-or-complete decision must not
+│   clobber a row a different worker has since reclaimed. Tested (real
+│   PostgreSQL 16 Testcontainers): a row with conflict criteria and no
+│   matching event in the log fires normally and reaches COMPLETED; a row
+│   with conflict criteria matching an event already in the log is never
+│   appended (confirmed via storage.readRange afterward), reaches
+│   SKIPPED_CONFLICT, and invokes a capturing ConflictSkipSink exactly once
+│   with the correct conflicting event; a row scheduled via the pre-existing
+│   3-arg overload (null conflictCriteria) fires identically to before this
+│   feature existed, confirming no regression; and a dedicated fencing test
+│   mirrors the dead-letter fencing test's pattern — worker A claims a row,
+│   its lease expires before it can finish the conflict check, worker B
+│   reclaims it, and worker A's late markSkippedConflict call afterward is a
+│   no-op, proven by worker B's own subsequent markCompleted still
+│   succeeding.
 │   Depends on: eventstore-core only.
 │
 ├── opendcb-axon-spring-boot-routing/
@@ -492,9 +529,11 @@ events).
     via `EventStoreStorage.appendAtomically` rather than publishing to a
     transport — so, unlike the original command-dispatch design it
     replaced, it has zero dependency on `org.axonframework` and depends
-    only on `eventstore-core`. The DCB-native conflict-predicate safety net
-    and a retry-cap/dead-letter mechanism remain deliberately deferred
-    future enhancements (see the module's own status entry above).
+    only on `eventstore-core`. Both of the enhancements originally deferred
+    from the first pass — the retry-cap/dead-letter mechanism and the
+    DCB-native conflict-predicate safety net (`ConflictCriteria`,
+    `SKIPPED_CONFLICT`, `ConflictSkipSink`) — are now DONE too (see the
+    module's own status entry above).
 12. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
     `outbox-relay-webhook`, `bootstrap-axon-mysql`, `bootstrap-axon-mongo` —
     fill in once the pattern is validated once.

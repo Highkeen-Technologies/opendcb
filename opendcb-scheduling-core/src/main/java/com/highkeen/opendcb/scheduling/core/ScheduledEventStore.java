@@ -60,6 +60,11 @@ import java.util.UUID;
  * is a {@code DeadLetterSink} mechanism independent of {@code outbox-relay-core}'s, mirroring its shape
  * without depending on it -- see {@link DeadLetterSink}.
  *
+ * <p>Each row may optionally carry a {@link ConflictCriteria}, persisted as {@code
+ * conflict_criteria_json} (nullable -- {@code null} means no check, preserving prior behavior
+ * exactly): {@link ScheduledEventDispatcher} checks it against the log immediately before firing
+ * and, on a match, transitions the row straight to {@code SKIPPED_CONFLICT} instead of appending.
+ *
  * <p>Callers must invoke {@link #ensureSchema()} once at startup before using this class.
  */
 public class ScheduledEventStore {
@@ -80,7 +85,8 @@ public class ScheduledEventStore {
                 worker_id TEXT,
                 created_at TIMESTAMPTZ NOT NULL,
                 attempt_count INT NOT NULL DEFAULT 0,
-                max_attempts INT NOT NULL
+                max_attempts INT NOT NULL,
+                conflict_criteria_json TEXT
             )""";
 
     /**
@@ -117,6 +123,11 @@ public class ScheduledEventStore {
         return schedule(scheduledTime, eventToFire, scopeName, DEFAULT_MAX_ATTEMPTS);
     }
 
+    /** Equivalent to {@link #schedule(Instant, StoredEvent, String, int, ConflictCriteria)} with no conflict check. */
+    public UUID schedule(Instant scheduledTime, StoredEvent eventToFire, String scopeName, int maxAttempts) {
+        return schedule(scheduledTime, eventToFire, scopeName, maxAttempts, null);
+    }
+
     /**
      * Inserts a {@code PENDING} row for {@code eventToFire} to be fired at {@code scheduledTime}.
      * Only {@code eventId}/{@code messageType}/{@code payloadClass}/{@code payloadJson}/{@code
@@ -126,15 +137,21 @@ public class ScheduledEventStore {
      *
      * @param maxAttempts the number of times {@link #claimDue} may claim this row before dead-lettering
      *                     it instead (see the class Javadoc's dead-letter section)
+     * @param conflictCriteria if non-null, {@link ScheduledEventDispatcher} skips firing this event
+     *                          (transitioning it to {@code SKIPPED_CONFLICT} instead) if a matching
+     *                          event already exists in the log at fire time; {@code null} means no
+     *                          conflict check, the same behavior as before this parameter existed
      */
-    public UUID schedule(Instant scheduledTime, StoredEvent eventToFire, String scopeName, int maxAttempts) {
+    public UUID schedule(Instant scheduledTime, StoredEvent eventToFire, String scopeName, int maxAttempts,
+            ConflictCriteria conflictCriteria) {
         UUID id = UUID.randomUUID();
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO scheduled_event
                             (id, scheduled_time, event_id, message_type, payload_class, payload_json,
-                             metadata_json, tags_json, scope_name, status, max_attempts, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+                             metadata_json, tags_json, scope_name, status, max_attempts,
+                             conflict_criteria_json, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
                         """)) {
             statement.setObject(1, id);
             statement.setTimestamp(2, Timestamp.from(scheduledTime));
@@ -146,7 +163,8 @@ public class ScheduledEventStore {
             statement.setString(8, writeJson(eventToFire.tags()));
             statement.setString(9, scopeName);
             statement.setInt(10, maxAttempts);
-            statement.setTimestamp(11, Timestamp.from(Instant.now()));
+            statement.setString(11, conflictCriteria == null ? null : writeJson(conflictCriteria));
+            statement.setTimestamp(12, Timestamp.from(Instant.now()));
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to schedule event " + eventToFire.eventId(), e);
@@ -211,7 +229,7 @@ public class ScheduledEventStore {
                 try (PreparedStatement select = connection.prepareStatement("""
                         SELECT id, scheduled_time, event_id, message_type, payload_class, payload_json,
                                metadata_json, tags_json, scope_name, created_at, claimed_at, worker_id,
-                               attempt_count, max_attempts
+                               attempt_count, max_attempts, conflict_criteria_json
                         FROM scheduled_event
                         WHERE (status = 'PENDING' AND scheduled_time <= ?)
                            OR (status = 'IN_PROGRESS' AND claimed_at <= ?)
@@ -274,26 +292,48 @@ public class ScheduledEventStore {
 
     /**
      * Marks {@code scheduleId} {@code COMPLETED}, but only if it is still {@code IN_PROGRESS} and still
-     * claimed by {@code workerId} -- the {@code UPDATE ... WHERE status = 'IN_PROGRESS' AND worker_id =
-     * ?} guard.
-     *
-     * <p>Guarding on {@code status} alone is not enough: if this worker's lease expired and {@link
-     * #claimDue} let a different worker reclaim the row, the row is {@code IN_PROGRESS} again --
-     * just owned by that other worker. A status-only guard would still match and let this worker's
-     * late completion call overwrite the reclaiming worker's in-flight claim. Fencing on {@code
-     * worker_id} too closes that gap: once reclaimed, this worker's {@code workerId} no longer matches,
-     * so its late call is a genuine no-op rather than silently corrupting the new claim.
+     * claimed by {@code workerId} -- see {@link #updateIfInProgressAndOwned}'s Javadoc for why the
+     * {@code worker_id} fencing is necessary, not just the status check.
      */
     public void markCompleted(UUID scheduleId, String workerId) {
+        updateIfInProgressAndOwned(scheduleId, workerId, "COMPLETED", "completed");
+    }
+
+    /**
+     * Marks {@code scheduleId} {@code SKIPPED_CONFLICT} -- {@link ScheduledEventDispatcher} found an
+     * event matching the row's {@link ConflictCriteria} already in the log and deliberately chose not
+     * to fire it. Same {@code worker_id} fencing as {@link #markCompleted}, via {@link
+     * #updateIfInProgressAndOwned}.
+     */
+    public void markSkippedConflict(UUID scheduleId, String workerId) {
+        updateIfInProgressAndOwned(scheduleId, workerId, "SKIPPED_CONFLICT", "skipped (conflict)");
+    }
+
+    /**
+     * Shared fencing guard behind {@link #markCompleted} and {@link #markSkippedConflict}: {@code
+     * UPDATE ... WHERE status = 'IN_PROGRESS' AND worker_id = ?}.
+     *
+     * <p>Guarding on {@code status} alone is not enough: if this worker's lease expired and {@link
+     * #claimDue} let a different worker reclaim the row (or dead-letter it), the row's status has
+     * since moved on from underneath this worker -- reclaimed rows are {@code IN_PROGRESS} again, just
+     * owned by someone else. A status-only guard would still match a reclaimed row and let this
+     * worker's late call overwrite the reclaiming worker's in-flight outcome. Fencing on {@code
+     * worker_id} too closes that gap: once reclaimed (or dead-lettered, where {@code worker_id} is left
+     * as whichever worker last held it, but {@code status} no longer matches), this worker's late call
+     * is a genuine no-op rather than silently corrupting the new state.
+     */
+    private void updateIfInProgressAndOwned(UUID scheduleId, String workerId, String newStatus, String verbPastTense) {
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(
-                        "UPDATE scheduled_event SET status = 'COMPLETED' "
+                        "UPDATE scheduled_event SET status = ? "
                                 + "WHERE id = ? AND status = 'IN_PROGRESS' AND worker_id = ?")) {
-            statement.setObject(1, scheduleId);
-            statement.setString(2, workerId);
+            statement.setString(1, newStatus);
+            statement.setObject(2, scheduleId);
+            statement.setString(3, workerId);
             statement.executeUpdate();
         } catch (SQLException e) {
-            throw new IllegalStateException("Failed to mark scheduled event " + scheduleId + " completed", e);
+            throw new IllegalStateException(
+                    "Failed to mark scheduled event " + scheduleId + " " + verbPastTense, e);
         }
     }
 
@@ -314,7 +354,8 @@ public class ScheduledEventStore {
                 workerId,
                 resultSet.getTimestamp("created_at").toInstant(),
                 attemptCount,
-                maxAttempts);
+                maxAttempts,
+                readConflictCriteria(resultSet.getString("conflict_criteria_json")));
     }
 
     private static Instant nullableInstant(ResultSet resultSet, String column) throws SQLException {
@@ -343,6 +384,17 @@ public class ScheduledEventStore {
             return objectMapper.readValue(json, new TypeReference<Set<StoredTag>>() {});
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to deserialize scheduled event tags JSON", e);
+        }
+    }
+
+    private ConflictCriteria readConflictCriteria(String json) {
+        if (json == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, ConflictCriteria.class);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to deserialize scheduled event conflict criteria JSON", e);
         }
     }
 }

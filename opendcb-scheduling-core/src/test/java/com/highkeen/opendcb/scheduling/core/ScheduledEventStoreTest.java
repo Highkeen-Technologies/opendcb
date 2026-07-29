@@ -313,6 +313,31 @@ class ScheduledEventStoreTest {
         assertEquals("DEAD_LETTERED", fetchStatus(id));
     }
 
+    @Test
+    void staleWorkersLateMarkSkippedConflictIsANoOpAfterAnotherWorkerReclaimsTheRow() throws InterruptedException,
+            SQLException {
+        ScheduledEventStore storeA = new ScheduledEventStore(dataSource);
+        ScheduledEventStore storeB = new ScheduledEventStore(dataSource);
+        Duration shortLease = Duration.ofMillis(300);
+        UUID id = storeA.schedule(Instant.now().minusSeconds(1), testEvent("evt-conflict-fencing"), "scope-a");
+
+        List<ScheduledEventRecord> claimedByA = storeA.claimDue(Instant.now(), 10, "worker-A", shortLease).claimed();
+        assertEquals(1, claimedByA.size());
+
+        // Worker A's lease expires before it finishes its conflict check.
+        Thread.sleep(shortLease.plusMillis(300).toMillis());
+
+        List<ScheduledEventRecord> claimedByB = storeB.claimDue(Instant.now(), 10, "worker-B", shortLease).claimed();
+        assertEquals(1, claimedByB.size(), "worker B must reclaim the row once worker A's lease expired");
+
+        // Worker A's late conflict-skip decision must not clobber worker B's active claim.
+        storeA.markSkippedConflict(id, "worker-A");
+
+        // Proven by worker B still being able to legitimately complete its own claim afterward.
+        assertDoesNotThrow(() -> storeB.markCompleted(id, "worker-B"));
+        assertEquals("COMPLETED", fetchStatus(id));
+    }
+
     private static Callable<List<ScheduledEventRecord>> claimRaceTask(
             ScheduledEventStore store, String workerId, Duration lease, CountDownLatch ready, CountDownLatch go) {
         return () -> {

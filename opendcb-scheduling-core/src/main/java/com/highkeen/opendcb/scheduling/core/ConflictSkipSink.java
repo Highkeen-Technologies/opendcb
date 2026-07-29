@@ -15,17 +15,14 @@
  */
 package com.highkeen.opendcb.scheduling.core;
 
-/** Lifecycle of one {@code scheduled_event} row, as owned by {@link ScheduledEventStore}. */
-public enum ScheduledEventStatus {
-    PENDING,
-    IN_PROGRESS,
-    COMPLETED,
-    CANCELLED,
-    /** Terminal: {@link ScheduledEventStore#claimDue} gave up after {@code max_attempts} claims. */
-    DEAD_LETTERED,
-    /**
-     * Terminal: {@link ScheduledEventDispatcher} found an event matching the row's {@link
-     * ConflictCriteria} already in the log and deliberately skipped firing it.
-     */
-    SKIPPED_CONFLICT
+import com.highkeen.opendcb.eventstore.core.StoredEvent;
+
+/**
+ * Receives scheduled events {@link ScheduledEventDispatcher} deliberately skipped firing because a
+ * {@link ConflictCriteria} matched an event already in the log. Same shape as {@link DeadLetterSink}
+ * but semantically distinct: a conflict skip is a deliberate by-design outcome, not a failure -- see
+ * {@link LoggingConflictSkipSink}, which logs at INFO rather than ERROR for exactly that reason.
+ */
+public interface ConflictSkipSink {
+    void onConflictSkip(ScheduledEventRecord record, StoredEvent conflictingEvent);
 }

@@ -28,6 +28,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
@@ -36,6 +38,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,6 +48,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * one row, runs the dispatcher once against a real {@link PostgresEventStoreStorage}, then reads the
  * event back via {@code storage.readRange} -- not just asserting the row's status flipped to
  * {@code COMPLETED} in {@code scheduled_event}, which alone wouldn't prove the append actually happened.
+ * Also covers dead-letter forwarding and the {@link ConflictCriteria} safety net: firing normally when
+ * no conflicting event exists, skipping (and notifying a {@link ConflictSkipSink}) when one does, and
+ * confirming a {@code null} conflictCriteria behaves identically to before that feature existed.
  */
 @Testcontainers
 class ScheduledEventDispatcherEndToEndTest {
@@ -138,6 +144,111 @@ class ScheduledEventDispatcherEndToEndTest {
                 "a dead-lettered scheduled event must never be appended");
     }
 
+    @Test
+    void conflictCriteriaWithNoMatchingEventInTheLogFiresNormally() throws SQLException {
+        StoredEvent eventToFire = new StoredEvent(
+                -1,
+                "evt-conflict-no-match",
+                "InvoicePaymentDeadlineExpired",
+                "com.example.DeadlinePayload",
+                "{\"invoiceId\":\"inv-1\"}",
+                Map.of(),
+                Set.of(new StoredTag("invoiceId", "inv-1")),
+                Instant.now());
+        ConflictCriteria criteria =
+                new ConflictCriteria(Set.of(new StoredTag("invoiceId", "inv-1")), Set.of("InvoicePaid"));
+        UUID id = scheduledEventStore.schedule(Instant.now().minusSeconds(1), eventToFire, "scope-a",
+                ScheduledEventStore.DEFAULT_MAX_ATTEMPTS, criteria);
+
+        ScheduledEventDispatcher dispatcher = new ScheduledEventDispatcher(
+                scheduledEventStore, storage, 10, "worker-1", Duration.ofMinutes(1));
+        dispatcher.runOnce();
+
+        List<StoredEvent> appended = storage.readRange(0, null, 100);
+        assertTrue(appended.stream().anyMatch(event -> event.eventId().equals("evt-conflict-no-match")),
+                "no conflicting event exists yet, so the scheduled event must fire normally");
+        assertEquals("COMPLETED", fetchStatus(id));
+    }
+
+    @Test
+    void conflictCriteriaWithAMatchingEventAlreadyInTheLogSkipsFiringAndNotifiesTheSink() throws SQLException {
+        StoredEvent alreadyPaid = new StoredEvent(
+                -1,
+                "evt-invoice-paid",
+                "InvoicePaid",
+                "com.example.InvoicePaidPayload",
+                "{\"invoiceId\":\"inv-2\"}",
+                Map.of(),
+                Set.of(new StoredTag("invoiceId", "inv-2")),
+                Instant.now());
+        storage.appendAtomically(List.of(alreadyPaid), 0L, event -> false);
+
+        StoredEvent deadlineEvent = new StoredEvent(
+                -1,
+                "evt-conflict-match",
+                "InvoicePaymentDeadlineExpired",
+                "com.example.DeadlinePayload",
+                "{\"invoiceId\":\"inv-2\"}",
+                Map.of(),
+                Set.of(new StoredTag("invoiceId", "inv-2")),
+                Instant.now());
+        ConflictCriteria criteria =
+                new ConflictCriteria(Set.of(new StoredTag("invoiceId", "inv-2")), Set.of("InvoicePaid"));
+        UUID id = scheduledEventStore.schedule(Instant.now().minusSeconds(1), deadlineEvent, "scope-a",
+                ScheduledEventStore.DEFAULT_MAX_ATTEMPTS, criteria);
+
+        CapturingConflictSkipSink conflictSkipSink = new CapturingConflictSkipSink();
+        ScheduledEventDispatcher dispatcher = new ScheduledEventDispatcher(
+                scheduledEventStore, storage, 10, "worker-1", Duration.ofMinutes(1),
+                new LoggingDeadLetterSink(), conflictSkipSink);
+        dispatcher.runOnce();
+
+        List<StoredEvent> appended = storage.readRange(0, null, 100);
+        assertTrue(appended.stream().noneMatch(event -> event.eventId().equals("evt-conflict-match")),
+                "a conflicting event already exists, so the scheduled event must never be appended");
+
+        assertEquals(1, conflictSkipSink.records.size(), "the conflict skip must reach the sink exactly once");
+        assertEquals("evt-conflict-match", conflictSkipSink.records.get(0).eventId());
+        assertEquals("evt-invoice-paid", conflictSkipSink.conflictingEvents.get(0).eventId());
+
+        assertEquals("SKIPPED_CONFLICT", fetchStatus(id));
+    }
+
+    @Test
+    void nullConflictCriteriaBehavesIdenticallyToBeforeThisFeatureExisted() throws SQLException {
+        StoredEvent eventToFire = new StoredEvent(
+                -1,
+                "evt-backward-compat",
+                "OrderReminderDue",
+                "com.example.OrderReminderDuePayload",
+                "{\"orderId\":\"order-9\"}",
+                Map.of(),
+                Set.of(new StoredTag("orderId", "order-9")),
+                Instant.now());
+        UUID id = scheduledEventStore.schedule(Instant.now().minusSeconds(1), eventToFire, "scope-a");
+
+        ScheduledEventDispatcher dispatcher = new ScheduledEventDispatcher(
+                scheduledEventStore, storage, 10, "worker-1", Duration.ofMinutes(1));
+        dispatcher.runOnce();
+
+        List<StoredEvent> appended = storage.readRange(0, null, 100);
+        assertTrue(appended.stream().anyMatch(event -> event.eventId().equals("evt-backward-compat")),
+                "a null conflictCriteria must not change firing behavior at all");
+        assertEquals("COMPLETED", fetchStatus(id));
+    }
+
+    private String fetchStatus(UUID id) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement =
+                        connection.prepareStatement("SELECT status FROM scheduled_event WHERE id = ?")) {
+            statement.setObject(1, id);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                resultSet.next();
+                return resultSet.getString("status");
+            }
+        }
+    }
+
     private static class CapturingDeadLetterSink implements DeadLetterSink {
         private final List<ScheduledEventRecord> records = new ArrayList<>();
         private final List<String> reasons = new ArrayList<>();
@@ -146,6 +257,17 @@ class ScheduledEventDispatcherEndToEndTest {
         public void onDeadLetter(ScheduledEventRecord record, String reason) {
             records.add(record);
             reasons.add(reason);
+        }
+    }
+
+    private static class CapturingConflictSkipSink implements ConflictSkipSink {
+        private final List<ScheduledEventRecord> records = new ArrayList<>();
+        private final List<StoredEvent> conflictingEvents = new ArrayList<>();
+
+        @Override
+        public void onConflictSkip(ScheduledEventRecord record, StoredEvent conflictingEvent) {
+            records.add(record);
+            conflictingEvents.add(conflictingEvent);
         }
     }
 

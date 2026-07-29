@@ -39,7 +39,8 @@ public record ScheduledEventRecord(
         String workerId,
         Instant createdAt,
         int attemptCount,
-        int maxAttempts) {
+        int maxAttempts,
+        ConflictCriteria conflictCriteria) {
 
     /**
      * Reconstructs the {@link StoredEvent} to fire, with {@code position = -1} (not yet assigned —
