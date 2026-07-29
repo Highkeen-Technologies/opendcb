@@ -1,6 +1,6 @@
 # OpenDCB
 
-[![CI](https://github.com/Highkeen-Technologies/opendbc/actions/workflows/ci.yml/badge.svg)](https://github.com/Highkeen-Technologies/opendbc/actions/workflows/ci.yml)
+[![CI](https://github.com/Highkeen-Technologies/opendcb/actions/workflows/ci.yml/badge.svg)](https://github.com/Highkeen-Technologies/opendcb/actions/workflows/ci.yml)
 
 **Maintained by [Highkeen Technologies](https://highkeen.com).**
 
