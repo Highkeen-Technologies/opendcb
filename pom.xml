@@ -21,7 +21,7 @@
 
     <groupId>com.highkeen.opendcb</groupId>
     <artifactId>opendcb</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>pom</packaging>
 
     <name>OpenDCB</name>
@@ -46,6 +46,32 @@
         <axon-framework-bom.version>5.1.2</axon-framework-bom.version>
         <jackson.version>2.22.1</jackson.version>
         <junit-bom.version>6.1.2</junit-bom.version>
+
+        <!--
+          Two independent version lines: see docs/ROADMAP.md's "Versioning" open question and
+          docs/ARCHITECTURE.md's module dependency order. Framework-agnostic modules
+          (eventstore-core/-postgres/-mysql/-mongo, outbox-relay-*, opendcb-scheduling-core) don't
+          share Axon's release cadence, so they version independently as opendcb.version;
+          Axon-coupled modules (integrations/eventstore-axon, bootstrap-axon-postgres,
+          opendcb-axon-spring-boot-starter, opendcb-axon-spring-boot-routing) are qualified with the
+          Axon Framework version they're built against, as opendcb-axon.version.
+
+          Every module in one of these two groups declares its own explicit <version> below,
+          overriding this POM's inherited version (Maven only inherits <version> from the parent
+          when the child does NOT declare its own; see the Maven POM reference's "Inheritance"
+          section). Every inter-module <dependency> that crosses a version boundary must then
+          reference ${opendcb.version} or ${opendcb-axon.version} explicitly, never
+          ${project.version}: that property only ever resolves to the version of the POM being
+          built, not of whatever it depends on, so once any module's version diverges from this
+          aggregator's, ${project.version} silently becomes wrong for every other module's
+          reference to it.
+
+          This aggregator POM's own <version> (above) is not published or depended on by anything
+          external; examples/* (not meant to be depended on externally either) are the only
+          modules that inherit it unchanged, for simplicity.
+        -->
+        <opendcb.version>1.0.0</opendcb.version>
+        <opendcb-axon.version>1.0.0-axon5.1</opendcb-axon.version>
     </properties>
 
     <modules>

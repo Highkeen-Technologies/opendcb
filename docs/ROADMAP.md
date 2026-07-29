@@ -545,11 +545,45 @@ events).
 - **Publishing target:** GitHub under a Highkeen org + Maven Central via
   Sonatype, or internal to Highkeen first, open-sourced once proven on real
   client engagements?
-- **Versioning:** tie module versions to the Axon Framework version they
-  were built against (e.g. `1.0.0-axon5.1`)? Framework-agnostic modules
-  (`eventstore-core`, providers) could version independently from
-  `integrations/eventstore-axon`, since they don't actually depend on Axon's
-  release cadence.
+- **Versioning:** RESOLVED — modules split into two independently-versioned
+  groups, since framework-agnostic modules don't share Axon's release
+  cadence. Root aggregator `pom.xml` defines two properties:
+  `opendcb.version` (`1.0.0`) for the framework-agnostic group
+  (`eventstore-core`, `eventstore-postgres`/`-mysql`/`-mongo`,
+  `outbox-relay-core`/`-kafka`/`-rabbitmq`/`-webhook`,
+  `opendcb-scheduling-core`), and `opendcb-axon.version` (`1.0.0-axon5.1`,
+  qualified with the Axon Framework version it's built against) for the
+  Axon-tied group (`integrations/eventstore-axon`, `bootstrap-axon-postgres`,
+  `opendcb-axon-spring-boot-starter`, `opendcb-axon-spring-boot-routing`).
+  Each member of a group declares its own explicit `<version>` (e.g.
+  `<version>${opendcb.version}</version>`), overriding the version it would
+  otherwise inherit from the parent — Maven only inherits a child's
+  `<version>` when the child does not declare its own (confirmed against the
+  Maven POM reference's "Inheritance" section). Every inter-module
+  `<dependency>` that crosses a version boundary references
+  `${opendcb.version}` or `${opendcb-axon.version}` explicitly instead of
+  `${project.version}`, since that property only ever resolves to the
+  version of the POM being built, not of whatever it depends on — it would
+  silently point at the wrong version for any dependency once the two
+  groups diverge. `examples/*` modules keep no `<version>` override at all
+  and simply inherit the aggregator's version unchanged, since they're not
+  meant to be published or depended on externally; each carries a one-line
+  comment explaining why. Verified end-to-end: `mvn clean install` from a
+  `.m2` cache with the prior `0.1.0-SNAPSHOT` artifacts deliberately removed
+  first (so a stale cache couldn't mask a misconfiguration) produces
+  `BUILD SUCCESS` across all 13 modules, and `mvn dependency:tree` on
+  `bootstrap-axon-postgres`, `opendcb-axon-spring-boot-starter`, and
+  `shipping-service` each confirm the resolved coordinates land at the
+  correct explicit version per module (e.g. `bootstrap-axon-postgres`
+  resolves `eventstore-axon:1.0.0-axon5.1` and `eventstore-postgres:1.0.0`
+  side by side, not a shared version). One known trade-off: Maven emits a
+  "'version' contains an expression but should be a constant" warning for
+  every module using a property in `<version>` — a documented soft
+  limitation of this pattern (mvn.io/docs), harmless for a same-reactor
+  build like this one, but worth revisiting with the `flatten-maven-plugin`
+  before actually publishing to Maven Central, since a consumer resolving
+  a dependency from a remote repo needs the literal version already
+  substituted into the POM, not the property reference.
 - **Schema evolution:** RESOLVED (partially) — `integrations/eventstore-axon`
   now uses Axon's real `Converter` SPI (`JacksonConverter`) for payload
   (de)serialization instead of an ad-hoc `ObjectMapper`. Upcasting remains

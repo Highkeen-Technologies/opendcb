@@ -22,11 +22,14 @@
     <parent>
         <groupId>com.highkeen.opendcb</groupId>
         <artifactId>opendcb</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0</version>
         <relativePath>../../../pom.xml</relativePath>
     </parent>
 
     <artifactId>shipping-service</artifactId>
+    <!-- No own <version>: examples/* aren't published or meant to be depended on externally,
+         so they simply inherit the aggregator's version unchanged (see root pom.xml's
+         opendcb.version property comment). -->
     <packaging>jar</packaging>
     <name>OpenDCB :: Examples :: Microservices Sample :: Shipping Service</name>
     <description>
@@ -48,7 +51,7 @@
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>bootstrap-axon-postgres</artifactId>
-            <version>${project.version}</version>
+            <version>${opendcb-axon.version}</version>
         </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
@@ -73,7 +76,11 @@
 
         <!-- End-to-end test dispatches through orders-service's own OrdersService/PlaceOrder/
              OrderPlacedIntegrationEvent to prove the whole cross-bounded-context flow, not just
-             shipping-service in isolation. -->
+             shipping-service in isolation. orders-service is an unversioned examples/* module
+             like this one (both inherit the aggregator's version unchanged), so ${project.version}
+             correctly targets it here; it is NOT safe to assume this equivalence for any
+             non-examples/* dependency, which is why every other reference in this file uses an
+             explicit opendcb.version/opendcb-axon.version property instead. -->
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>orders-service</artifactId>
@@ -83,13 +90,13 @@
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>outbox-relay-rabbitmq</artifactId>
-            <version>${project.version}</version>
+            <version>${opendcb.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>eventstore-postgres</artifactId>
-            <version>${project.version}</version>
+            <version>${opendcb.version}</version>
             <scope>test</scope>
         </dependency>
 

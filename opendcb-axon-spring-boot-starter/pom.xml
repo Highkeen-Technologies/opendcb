@@ -22,10 +22,13 @@
     <parent>
         <groupId>com.highkeen.opendcb</groupId>
         <artifactId>opendcb</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0</version>
     </parent>
 
     <artifactId>opendcb-axon-spring-boot-starter</artifactId>
+    <!-- Axon-tied version line, qualified with the Axon Framework version this module is built
+         against; see the root pom.xml's opendcb-axon.version property comment. -->
+    <version>${opendcb-axon.version}</version>
     <packaging>jar</packaging>
 
     <name>OpenDCB :: Spring Boot Starter :: Axon</name>
@@ -59,7 +62,7 @@
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>bootstrap-axon-postgres</artifactId>
-            <version>${project.version}</version>
+            <version>${opendcb-axon.version}</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

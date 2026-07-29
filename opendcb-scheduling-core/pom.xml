@@ -22,10 +22,12 @@
     <parent>
         <groupId>com.highkeen.opendcb</groupId>
         <artifactId>opendcb</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0</version>
     </parent>
 
     <artifactId>opendcb-scheduling-core</artifactId>
+    <!-- Framework-agnostic version line; see the root pom.xml's opendcb.version property comment. -->
+    <version>${opendcb.version}</version>
     <packaging>jar</packaging>
 
     <name>OpenDCB :: Scheduling :: Core</name>
@@ -46,7 +48,7 @@
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>eventstore-core</artifactId>
-            <version>${project.version}</version>
+            <version>${opendcb.version}</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -61,7 +63,7 @@
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>eventstore-postgres</artifactId>
-            <version>${project.version}</version>
+            <version>${opendcb.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>

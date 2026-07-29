@@ -22,10 +22,12 @@
     <parent>
         <groupId>com.highkeen.opendcb</groupId>
         <artifactId>opendcb</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0</version>
     </parent>
 
     <artifactId>eventstore-core</artifactId>
+    <!-- Framework-agnostic version line; see the root pom.xml's opendcb.version property comment. -->
+    <version>${opendcb.version}</version>
     <packaging>jar</packaging>
 
     <name>OpenDCB :: Event Store :: Core</name>

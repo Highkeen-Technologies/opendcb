@@ -22,11 +22,14 @@
     <parent>
         <groupId>com.highkeen.opendcb</groupId>
         <artifactId>opendcb</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0</version>
         <relativePath>../../../pom.xml</relativePath>
     </parent>
 
     <artifactId>orders-service</artifactId>
+    <!-- No own <version>: examples/* aren't published or meant to be depended on externally,
+         so they simply inherit the aggregator's version unchanged (see root pom.xml's
+         opendcb.version property comment). -->
     <packaging>jar</packaging>
     <name>OpenDCB :: Examples :: Microservices Sample :: Orders Service</name>
     <description>
@@ -44,12 +47,12 @@
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>bootstrap-axon-postgres</artifactId>
-            <version>${project.version}</version>
+            <version>${opendcb-axon.version}</version>
         </dependency>
         <dependency>
             <groupId>com.highkeen.opendcb</groupId>
             <artifactId>outbox-relay-rabbitmq</artifactId>
-            <version>${project.version}</version>
+            <version>${opendcb.version}</version>
         </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
