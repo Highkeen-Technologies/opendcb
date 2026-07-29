@@ -29,7 +29,7 @@
         Open-source Java toolkit providing DCB-capable event storage on any
         backing store, plus event routing, for event-sourcing frameworks.
     </description>
-    <url>https://github.com/highkeen/opendcb</url>
+    <url>https://github.com/Highkeen-Technologies/opendbc</url>
 
     <licenses>
         <license>
