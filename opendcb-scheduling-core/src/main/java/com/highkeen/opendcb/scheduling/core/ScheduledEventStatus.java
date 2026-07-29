@@ -20,5 +20,7 @@ public enum ScheduledEventStatus {
     PENDING,
     IN_PROGRESS,
     COMPLETED,
-    CANCELLED
+    CANCELLED,
+    /** Terminal: {@link ScheduledEventStore#claimDue} gave up after {@code max_attempts} claims. */
+    DEAD_LETTERED
 }

@@ -119,9 +119,50 @@ opendcb/
 │   (position = -1) from each due row, and appends it via
 │   EventStoreStorage.appendAtomically, marking the row COMPLETED only on a
 │   successful append; a failed append is logged and the row left
-│   IN_PROGRESS for a later lease-expiry reclaim rather than reverted or
-│   dead-lettered. start(Duration pollInterval)/stop() use the same daemon
-│   ScheduledExecutorService shape as OutboxRelay.
+│   IN_PROGRESS for a later lease-expiry reclaim, rather than reverted,
+│   unless that reclaim would exceed the row's own attempt budget (see the
+│   retry-cap/dead-letter paragraph below). start(Duration pollInterval)/
+│   stop() use the same daemon ScheduledExecutorService shape as OutboxRelay.
+│   Retry cap and dead-letter handling: scheduled_event carries its own
+│   attempt_count INT NOT NULL DEFAULT 0 and max_attempts INT NOT NULL
+│   columns (max_attempts set at schedule() time via a DEFAULT_MAX_ATTEMPTS
+│   = 5 overload — enough claim attempts to ride out a handful of transient
+│   failures without retrying a permanently-broken schedule forever), plus a
+│   new terminal DEAD_LETTERED status alongside PENDING/IN_PROGRESS/
+│   COMPLETED/CANCELLED. Inside the same locked transaction that identifies
+│   candidate rows, claimDue now branches each row BEFORE claiming: if
+│   claiming it would push attempt_count past max_attempts, it transitions
+│   straight to DEAD_LETTERED (a separate batched UPDATE from the ordinary
+│   IN_PROGRESS one) and is never returned as claimable again; otherwise it
+│   is claimed as before with attempt_count incremented. claimDue returns a
+│   ClaimBatch(claimed, deadLettered) record bundling both outcomes rather
+│   than two separate calls, since the branch has to happen inside that one
+│   transaction. DeadLetterSink (onDeadLetter(ScheduledEventRecord, String
+│   reason)) plus its default LoggingDeadLetterSink (System.Logger at
+│   ERROR) are a locally-defined mirror of outbox-relay-core's
+│   DeadLetterSink pattern — same shape, independent implementation, since
+│   this module still depends only on eventstore-core, not
+│   outbox-relay-core (same relationship ScheduledEventStore already has to
+│   JdbcRelayPositionStore). ScheduledEventDispatcher's constructor takes an
+│   optional DeadLetterSink (defaulting to LoggingDeadLetterSink); runOnce()
+│   forwards every row a poll's claimDue dead-lettered to the sink with a
+│   reason of "exceeded max_attempts (N)" before dispatching the claimed
+│   batch. Tested (real PostgreSQL 16 Testcontainers): a row scheduled with
+│   max_attempts=2, claimed and abandoned twice (each past its lease), is
+│   dead-lettered on the third claimDue call rather than returned claimable,
+│   with ClaimBatch.deadLettered() containing exactly that row; a
+│   dead-lettered row is confirmed genuinely terminal by querying its status
+│   directly and by further claimDue calls returning it in neither list;  a
+│   row that succeeds within its budget (completes on attempt 2 of
+│   max_attempts=5) never reaches DEAD_LETTERED; and a dedicated fencing
+│   test confirms markCompleted's WHERE status = 'IN_PROGRESS' AND
+│   worker_id = ? guard still correctly no-ops when a stale worker's late
+│   completion targets a row a different worker's claimDue call
+│   dead-lettered out from under it in the interim, rather than resurrecting
+│   it. A dispatcher-level end-to-end test confirms runOnce() invokes a
+│   capturing DeadLetterSink exactly once with the expected reason string
+│   and never appends the dead-lettered event to a real
+│   PostgresEventStoreStorage.
 │   Tested against a real PostgreSQL 16 Testcontainers instance (via
 │   eventstore-postgres's PostgresEventStoreStorage as the EventStoreStorage
 │   under test): claimDue returns a row only at/after its scheduled_time,
@@ -144,17 +185,16 @@ opendcb/
 │   PostgresEventStoreStorage, and confirms the event is genuinely readable
 │   back via storage.readRange afterward.
 │   Deliberately deferred (not built in this pass, see
-│   docs/ARCHITECTURE.md's "opendcb-scheduling-core" section):
-│   (1) the optional DCB-native conflict-predicate safety net — letting a
-│   caller supply a real conflictsIfMatched predicate at schedule time so a
-│   scheduled append is skipped if a conflicting event already occurred
-│   (e.g. don't fire InvoicePaymentDeadlineExpiredEvent if InvoicePaidEvent
-│   already exists). ScheduledEventDispatcher currently always appends with
+│   docs/ARCHITECTURE.md's "opendcb-scheduling-core" section): the optional
+│   DCB-native conflict-predicate safety net — letting a caller supply a
+│   real conflictsIfMatched predicate at schedule time so a scheduled append
+│   is skipped if a conflicting event already occurred (e.g. don't fire
+│   InvoicePaymentDeadlineExpiredEvent if InvoicePaidEvent already exists).
+│   ScheduledEventDispatcher currently always appends with
 │   conflictCheckFromPositionExclusive = 0 and a predicate that never
 │   matches, i.e. every fire always succeeds unless the store itself fails.
-│   (2) a retry cap / dead-letter mechanism for permanently-failing appends
-│   — a failed append currently retries indefinitely, roughly once per
-│   leaseDuration, forever, with no cap and no dead-letter sink.
+│   (The retry-cap/dead-letter mechanism that was the other deferred item
+│   here is now DONE — see above.)
 │   Depends on: eventstore-core only.
 │
 ├── opendcb-axon-spring-boot-routing/

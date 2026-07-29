@@ -16,6 +16,7 @@
 package com.highkeen.opendcb.scheduling.core;
 
 import com.highkeen.opendcb.eventstore.core.EventStoreStorage;
+import com.highkeen.opendcb.eventstore.core.StoredEvent;
 
 import java.lang.System.Logger.Level;
 import java.time.Duration;
@@ -39,10 +40,13 @@ import java.util.concurrent.TimeUnit;
  * as a documented future enhancement. Every append here always succeeds unless the underlying store
  * itself fails: {@code conflictCheckFromPositionExclusive = 0} with a predicate that never matches.
  *
- * <p><b>No retry cap or dead-letter mechanism yet.</b> On append failure, the row is deliberately left
- * {@code IN_PROGRESS} rather than reverted or dead-lettered -- it simply becomes reclaimable once its
- * lease expires, so a permanently-failing append retries roughly every {@code leaseDuration},
- * indefinitely. This is deliberate future scope (see {@code docs/ROADMAP.md}), not an oversight.
+ * <p><b>Retry cap and dead-letter handling.</b> Each row carries its own {@code max_attempts} budget
+ * (set at schedule time, see {@link ScheduledEventStore#schedule(Instant, StoredEvent, String, int)}).
+ * On append failure the row is left {@code IN_PROGRESS}, exactly as before, and becomes reclaimable
+ * once its lease expires -- but {@link ScheduledEventStore#claimDue} now refuses to reclaim a row past
+ * its attempt budget, dead-lettering it instead. This dispatcher forwards every newly dead-lettered
+ * record from each poll cycle to a {@link DeadLetterSink} (defaulting to {@link LoggingDeadLetterSink}
+ * if none is supplied), closing what was previously an indefinite retry loop.
  */
 public class ScheduledEventDispatcher {
 
@@ -53,6 +57,7 @@ public class ScheduledEventDispatcher {
     private final int batchSize;
     private final String workerId;
     private final Duration leaseDuration;
+    private final DeadLetterSink deadLetterSink;
 
     private ScheduledExecutorService executor;
 
@@ -62,22 +67,38 @@ public class ScheduledEventDispatcher {
             int batchSize,
             String workerId,
             Duration leaseDuration) {
+        this(scheduledEventStore, storage, batchSize, workerId, leaseDuration, new LoggingDeadLetterSink());
+    }
+
+    public ScheduledEventDispatcher(
+            ScheduledEventStore scheduledEventStore,
+            EventStoreStorage storage,
+            int batchSize,
+            String workerId,
+            Duration leaseDuration,
+            DeadLetterSink deadLetterSink) {
         this.scheduledEventStore = scheduledEventStore;
         this.storage = storage;
         this.batchSize = batchSize;
         this.workerId = workerId;
         this.leaseDuration = leaseDuration;
+        this.deadLetterSink = deadLetterSink;
     }
 
     /**
      * Claims due rows and fires each in turn: appends the reconstructed event, then marks the row
      * completed only on a successful append. A failed append is logged and skipped, leaving the row
-     * {@code IN_PROGRESS} for a later lease-expiry reclaim (see the class Javadoc).
+     * {@code IN_PROGRESS} for a later lease-expiry reclaim (see the class Javadoc). Rows this poll's
+     * {@link ScheduledEventStore#claimDue} dead-lettered (exceeded {@code max_attempts}) are handed to
+     * {@link #deadLetterSink} instead -- they are never dispatched.
      */
     public void runOnce() {
         Instant now = Instant.now();
-        List<ScheduledEventRecord> due = scheduledEventStore.claimDue(now, batchSize, workerId, leaseDuration);
-        for (ScheduledEventRecord record : due) {
+        ScheduledEventStore.ClaimBatch batch = scheduledEventStore.claimDue(now, batchSize, workerId, leaseDuration);
+        for (ScheduledEventRecord record : batch.deadLettered()) {
+            deadLetterSink.onDeadLetter(record, "exceeded max_attempts (" + record.maxAttempts() + ")");
+        }
+        for (ScheduledEventRecord record : batch.claimed()) {
             try {
                 storage.appendAtomically(List.of(record.toStoredEvent(Instant.now())), 0L, event -> false);
             } catch (RuntimeException e) {

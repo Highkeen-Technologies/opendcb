@@ -32,11 +32,13 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * End-to-end proof that {@link ScheduledEventDispatcher} genuinely fires a scheduled event: schedules
@@ -93,7 +95,58 @@ class ScheduledEventDispatcherEndToEndTest {
         assertEquals(Set.of(new StoredTag("orderId", "order-1")), appended.get(0).tags());
 
         // The row must now be COMPLETED, and therefore never claimable again.
-        assertEquals(0, scheduledEventStore.claimDue(Instant.now(), 10, "worker-1", Duration.ofMinutes(1)).size());
+        assertEquals(0,
+                scheduledEventStore.claimDue(Instant.now(), 10, "worker-1", Duration.ofMinutes(1)).claimed().size());
+    }
+
+    @Test
+    void runOnceForwardsRowsThatExceededMaxAttemptsToTheDeadLetterSinkAndNeverAppendsThem() throws InterruptedException {
+        Duration shortLease = Duration.ofMillis(300);
+        StoredEvent eventToFire = new StoredEvent(
+                -1,
+                "evt-dispatch-dead-letter",
+                "OrderReminderDue",
+                "com.example.OrderReminderDuePayload",
+                "{\"orderId\":\"order-2\"}",
+                Map.of("source", "scheduler"),
+                Set.of(new StoredTag("orderId", "order-2")),
+                Instant.now());
+        scheduledEventStore.schedule(Instant.now().minusSeconds(1), eventToFire, "scope-a", 2);
+
+        // Attempts 1 and 2 are simulated as abandoned worker claims directly against the store (not
+        // through the dispatcher), the same way ScheduledEventStoreTest simulates a crashed worker --
+        // this keeps the scenario focused on the dispatcher's handling of the eventual dead-letter,
+        // without needing to force a real append failure to keep the row IN_PROGRESS.
+        assertEquals(1, scheduledEventStore.claimDue(Instant.now(), 10, "worker-1", shortLease).claimed().size());
+        Thread.sleep(shortLease.plusMillis(300).toMillis());
+        assertEquals(1, scheduledEventStore.claimDue(Instant.now(), 10, "worker-1", shortLease).claimed().size());
+        Thread.sleep(shortLease.plusMillis(300).toMillis());
+
+        CapturingDeadLetterSink deadLetterSink = new CapturingDeadLetterSink();
+        ScheduledEventDispatcher dispatcher = new ScheduledEventDispatcher(
+                scheduledEventStore, storage, 10, "worker-1", shortLease, deadLetterSink);
+
+        // Third claim attempt: exceeds max_attempts=2, so this poll dead-letters it instead of firing it.
+        dispatcher.runOnce();
+
+        assertEquals(1, deadLetterSink.records.size(), "the dead-lettered row must reach the sink exactly once");
+        assertEquals("evt-dispatch-dead-letter", deadLetterSink.records.get(0).eventId());
+        assertEquals("exceeded max_attempts (2)", deadLetterSink.reasons.get(0));
+
+        List<StoredEvent> appended = storage.readRange(0, null, 100);
+        assertTrue(appended.stream().noneMatch(event -> event.eventId().equals("evt-dispatch-dead-letter")),
+                "a dead-lettered scheduled event must never be appended");
+    }
+
+    private static class CapturingDeadLetterSink implements DeadLetterSink {
+        private final List<ScheduledEventRecord> records = new ArrayList<>();
+        private final List<String> reasons = new ArrayList<>();
+
+        @Override
+        public void onDeadLetter(ScheduledEventRecord record, String reason) {
+            records.add(record);
+            reasons.add(reason);
+        }
     }
 
     private static DataSource newDataSource() {

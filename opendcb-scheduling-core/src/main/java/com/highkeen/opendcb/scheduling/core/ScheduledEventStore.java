@@ -54,6 +54,12 @@ import java.util.UUID;
  * -- Postgres re-checks the row's latest committed version when attempting to lock it, so a row another
  * worker already claimed and committed simply stops matching and is never even a candidate.
  *
+ * <p>Each row carries its own {@code attempt_count}/{@code max_attempts} retry budget: {@link
+ * #claimDue} dead-letters a row (see {@link ClaimBatch}) rather than claiming it once claiming would
+ * exceed that budget, terminating what would otherwise be an indefinite lease-expiry retry loop. This
+ * is a {@code DeadLetterSink} mechanism independent of {@code outbox-relay-core}'s, mirroring its shape
+ * without depending on it -- see {@link DeadLetterSink}.
+ *
  * <p>Callers must invoke {@link #ensureSchema()} once at startup before using this class.
  */
 public class ScheduledEventStore {
@@ -72,8 +78,18 @@ public class ScheduledEventStore {
                 status TEXT NOT NULL,
                 claimed_at TIMESTAMPTZ,
                 worker_id TEXT,
-                created_at TIMESTAMPTZ NOT NULL
+                created_at TIMESTAMPTZ NOT NULL,
+                attempt_count INT NOT NULL DEFAULT 0,
+                max_attempts INT NOT NULL
             )""";
+
+    /**
+     * Default {@code maxAttempts} for {@link #schedule(Instant, StoredEvent, String)}: enough claim
+     * attempts to ride out a handful of transient failures (e.g. a brief store outage spanning a few
+     * lease-expiry cycles) without letting a permanently-broken schedule retry forever with no
+     * dead-letter signal.
+     */
+    public static final int DEFAULT_MAX_ATTEMPTS = 5;
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
@@ -94,20 +110,31 @@ public class ScheduledEventStore {
     }
 
     /**
+     * Equivalent to {@link #schedule(Instant, StoredEvent, String, int)} with {@link
+     * #DEFAULT_MAX_ATTEMPTS}.
+     */
+    public UUID schedule(Instant scheduledTime, StoredEvent eventToFire, String scopeName) {
+        return schedule(scheduledTime, eventToFire, scopeName, DEFAULT_MAX_ATTEMPTS);
+    }
+
+    /**
      * Inserts a {@code PENDING} row for {@code eventToFire} to be fired at {@code scheduledTime}.
      * Only {@code eventId}/{@code messageType}/{@code payloadClass}/{@code payloadJson}/{@code
      * metadata}/{@code tags} are stored -- {@code eventToFire.position()} and {@code
      * eventToFire.timestamp()} are ignored, since the fired event's real position and timestamp are
      * assigned at fire time by {@link ScheduledEventDispatcher}, not at schedule time.
+     *
+     * @param maxAttempts the number of times {@link #claimDue} may claim this row before dead-lettering
+     *                     it instead (see the class Javadoc's dead-letter section)
      */
-    public UUID schedule(Instant scheduledTime, StoredEvent eventToFire, String scopeName) {
+    public UUID schedule(Instant scheduledTime, StoredEvent eventToFire, String scopeName, int maxAttempts) {
         UUID id = UUID.randomUUID();
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO scheduled_event
                             (id, scheduled_time, event_id, message_type, payload_class, payload_json,
-                             metadata_json, tags_json, scope_name, status, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                             metadata_json, tags_json, scope_name, status, max_attempts, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
                         """)) {
             statement.setObject(1, id);
             statement.setTimestamp(2, Timestamp.from(scheduledTime));
@@ -118,7 +145,8 @@ public class ScheduledEventStore {
             statement.setString(7, writeJson(eventToFire.metadata()));
             statement.setString(8, writeJson(eventToFire.tags()));
             statement.setString(9, scopeName);
-            statement.setTimestamp(10, Timestamp.from(Instant.now()));
+            statement.setInt(10, maxAttempts);
+            statement.setTimestamp(11, Timestamp.from(Instant.now()));
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to schedule event " + eventToFire.eventId(), e);
@@ -146,26 +174,44 @@ public class ScheduledEventStore {
     }
 
     /**
+     * The result of {@link #claimDue}: rows claimed for dispatch, and rows that instead exceeded their
+     * {@code max_attempts} budget this call and were transitioned straight to {@code DEAD_LETTERED}
+     * (never {@code IN_PROGRESS}, never returned by a future {@code claimDue} call).
+     */
+    public record ClaimBatch(List<ScheduledEventRecord> claimed, List<ScheduledEventRecord> deadLettered) {}
+
+    /**
      * Atomically claims up to {@code batchSize} rows that are either {@code PENDING} and due ({@code
      * scheduled_time <= now}), or {@code IN_PROGRESS} with an expired lease ({@code claimed_at +
-     * leaseDuration <= now} -- a crashed or stalled worker's stale claim), marking them {@code
-     * IN_PROGRESS} with {@code claimed_at = now} and {@code worker_id = workerId}. Safe for multiple
-     * concurrent JVMs: see the class Javadoc for why {@code SELECT ... FOR UPDATE SKIP LOCKED} makes
-     * this safe without double-claiming or blocking on rows this call isn't claiming.
+     * leaseDuration <= now} -- a crashed or stalled worker's stale claim). Safe for multiple concurrent
+     * JVMs: see the class Javadoc for why {@code SELECT ... FOR UPDATE SKIP LOCKED} makes this safe
+     * without double-claiming or blocking on rows this call isn't claiming.
      *
-     * <p>The returned records reflect the post-claim state ({@code status = IN_PROGRESS}, {@code
-     * claimedAt = now}, {@code workerId = workerId}) -- the state actually committed, not whatever the
-     * row held before this call.
+     * <p>Each candidate row is branched, inside the same locked transaction that identified it, before
+     * any claim is committed: if claiming it would push {@code attempt_count} past {@code max_attempts},
+     * it is transitioned straight to {@code DEAD_LETTERED} instead of {@code IN_PROGRESS} and is
+     * returned in {@link ClaimBatch#deadLettered()}, never {@link ClaimBatch#claimed()} -- it will never
+     * be a candidate again. Otherwise it is claimed as before: {@code IN_PROGRESS}, {@code
+     * attempt_count + 1}, {@code claimed_at = now}, {@code worker_id = workerId}, returned in {@link
+     * ClaimBatch#claimed()}. Branching before claiming (rather than claiming and separately checking)
+     * keeps the whole decision inside the one transaction the {@code SKIP LOCKED} guarantee already
+     * covers.
+     *
+     * <p>Claimed records reflect the post-claim state actually committed ({@code status = IN_PROGRESS},
+     * {@code claimedAt = now}, {@code workerId = workerId}, incremented {@code attemptCount}), not
+     * whatever the row held before this call.
      */
-    public List<ScheduledEventRecord> claimDue(Instant now, int batchSize, String workerId, Duration leaseDuration) {
+    public ClaimBatch claimDue(Instant now, int batchSize, String workerId, Duration leaseDuration) {
         Instant leaseExpiredBefore = now.minus(leaseDuration);
         List<ScheduledEventRecord> claimed = new ArrayList<>();
+        List<ScheduledEventRecord> deadLettered = new ArrayList<>();
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
                 try (PreparedStatement select = connection.prepareStatement("""
                         SELECT id, scheduled_time, event_id, message_type, payload_class, payload_json,
-                               metadata_json, tags_json, scope_name, created_at
+                               metadata_json, tags_json, scope_name, created_at, claimed_at, worker_id,
+                               attempt_count, max_attempts
                         FROM scheduled_event
                         WHERE (status = 'PENDING' AND scheduled_time <= ?)
                            OR (status = 'IN_PROGRESS' AND claimed_at <= ?)
@@ -178,18 +224,38 @@ public class ScheduledEventStore {
                     select.setInt(3, batchSize);
                     try (ResultSet resultSet = select.executeQuery()) {
                         while (resultSet.next()) {
-                            claimed.add(readClaimedRow(resultSet, now, workerId));
+                            int attemptCount = resultSet.getInt("attempt_count");
+                            int maxAttempts = resultSet.getInt("max_attempts");
+                            if (attemptCount + 1 > maxAttempts) {
+                                deadLettered.add(readRow(resultSet, ScheduledEventStatus.DEAD_LETTERED,
+                                        nullableInstant(resultSet, "claimed_at"), resultSet.getString("worker_id"),
+                                        attemptCount, maxAttempts));
+                            } else {
+                                claimed.add(readRow(resultSet, ScheduledEventStatus.IN_PROGRESS, now, workerId,
+                                        attemptCount + 1, maxAttempts));
+                            }
                         }
                     }
                 }
                 if (!claimed.isEmpty()) {
                     try (PreparedStatement update = connection.prepareStatement(
                             "UPDATE scheduled_event SET status = 'IN_PROGRESS', claimed_at = ?, "
-                                    + "worker_id = ? WHERE id = ?")) {
+                                    + "worker_id = ?, attempt_count = ? WHERE id = ?")) {
                         for (ScheduledEventRecord record : claimed) {
                             update.setTimestamp(1, Timestamp.from(now));
                             update.setString(2, workerId);
-                            update.setObject(3, record.id());
+                            update.setInt(3, record.attemptCount());
+                            update.setObject(4, record.id());
+                            update.addBatch();
+                        }
+                        update.executeBatch();
+                    }
+                }
+                if (!deadLettered.isEmpty()) {
+                    try (PreparedStatement update = connection.prepareStatement(
+                            "UPDATE scheduled_event SET status = 'DEAD_LETTERED' WHERE id = ?")) {
+                        for (ScheduledEventRecord record : deadLettered) {
+                            update.setObject(1, record.id());
                             update.addBatch();
                         }
                         update.executeBatch();
@@ -203,7 +269,7 @@ public class ScheduledEventStore {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to obtain database connection for claimDue", e);
         }
-        return claimed;
+        return new ClaimBatch(claimed, deadLettered);
     }
 
     /**
@@ -231,8 +297,8 @@ public class ScheduledEventStore {
         }
     }
 
-    private ScheduledEventRecord readClaimedRow(ResultSet resultSet, Instant claimedAt, String workerId)
-            throws SQLException {
+    private ScheduledEventRecord readRow(ResultSet resultSet, ScheduledEventStatus status, Instant claimedAt,
+            String workerId, int attemptCount, int maxAttempts) throws SQLException {
         return new ScheduledEventRecord(
                 (UUID) resultSet.getObject("id"),
                 resultSet.getTimestamp("scheduled_time").toInstant(),
@@ -243,10 +309,17 @@ public class ScheduledEventStore {
                 readJsonMap(resultSet.getString("metadata_json")),
                 readJsonTags(resultSet.getString("tags_json")),
                 resultSet.getString("scope_name"),
-                ScheduledEventStatus.IN_PROGRESS,
+                status,
                 claimedAt,
                 workerId,
-                resultSet.getTimestamp("created_at").toInstant());
+                resultSet.getTimestamp("created_at").toInstant(),
+                attemptCount,
+                maxAttempts);
+    }
+
+    private static Instant nullableInstant(ResultSet resultSet, String column) throws SQLException {
+        Timestamp timestamp = resultSet.getTimestamp(column);
+        return timestamp == null ? null : timestamp.toInstant();
     }
 
     private String writeJson(Object value) {

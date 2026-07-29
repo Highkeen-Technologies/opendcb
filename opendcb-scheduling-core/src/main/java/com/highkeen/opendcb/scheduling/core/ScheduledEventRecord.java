@@ -37,7 +37,9 @@ public record ScheduledEventRecord(
         ScheduledEventStatus status,
         Instant claimedAt,
         String workerId,
-        Instant createdAt) {
+        Instant createdAt,
+        int attemptCount,
+        int maxAttempts) {
 
     /**
      * Reconstructs the {@link StoredEvent} to fire, with {@code position = -1} (not yet assigned —
