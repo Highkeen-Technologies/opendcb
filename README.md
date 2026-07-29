@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/Highkeen-Technologies/opendcb/actions/workflows/ci.yml/badge.svg)](https://github.com/Highkeen-Technologies/opendcb/actions/workflows/ci.yml)
 
-**Maintained by [Highkeen Technologies](https://highkeen.com).**
+**Maintained by [Highkeen Technologies](https://highkeen.com).** See
+[AUTHORS.md](AUTHORS.md) for maintainers.
 
 OpenDCB is an open-source Java toolkit that fills the gap [Axon Framework
 5](https://github.com/AxonFramework/AxonFramework) (free) deliberately
@@ -123,8 +124,8 @@ consuming side and a test proving redelivery-safe idempotency.
 ## Contributing
 
 See [CLAUDE.md](CLAUDE.md) for the hard architectural rules (framework
-coupling boundaries, licensing constraints), and the `docs/` directory for
-full detail:
+coupling boundaries, licensing constraints), [AUTHORS.md](AUTHORS.md) for
+maintainers, and the `docs/` directory for full detail:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module layout and the
   framework-agnostic storage design.
