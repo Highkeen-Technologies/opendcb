@@ -583,7 +583,49 @@ events).
   `maven-deploy-plugin` (3.1.4, the latest stable — not the `4.0.0-beta-2`
   Maven Central currently lists as `<release>`/`<latest>`) directly in its
   own `<build><plugins>` with `<skip>true</skip>`, so `mvn deploy`/`mvn
-  clean deploy` never attempts to publish them. Binding `gpg:sign` to the
+  clean deploy` never attempts to publish them.
+
+  **Bug found by the first real `workflow_dispatch` run (2026-07-30), fixed
+  same day:** that per-module `<skip>true</skip>` stub was only ever added to
+  `examples/*`, not to the root aggregator `pom.xml` itself — but the
+  aggregator (`packaging=pom`, artifactId `opendcb`) is also a reactor
+  project and goes through the `deploy` phase like everything else. It has
+  no `central-publishing-maven-plugin` (only the 9 publishable modules
+  declare that) and no deploy-skip, so `mvn clean deploy -P release` failed
+  immediately with `Deployment failed: repository element was not specified
+  in the POM inside distributionManagement element or in
+  -DaltDeploymentRepository=...` — before the build even reached a real
+  module. (The version-resolution/validation step that ran just before it
+  worked correctly: a manual run with input `1.0.0-rc.1` correctly produced
+  `opendcb.version=1.0.0-rc.1` and `opendcb-axon.version=1.0.0-rc.1-axon5.1`
+  — this was purely a deploy-skip gap, not a versioning bug.) Fixed with a
+  `maven.deploy.skip` property instead of another per-module plugin stub:
+  confirmed via `mvn maven-deploy-plugin:3.1.4:help -Dgoal=deploy
+  -Ddetail=true` that the plugin's own `skip` parameter's built-in default
+  expression already is `${maven.deploy.skip}` (same mechanism as
+  `maven.test.skip`), so no explicit
+  `<configuration><skip>${maven.deploy.skip}</skip></configuration>` needed
+  to be added to the plugin's `pluginManagement` entry at all — setting the
+  property anywhere in the effective POM is enough. Root `pom.xml` sets
+  `maven.deploy.skip` to `true` in its own `<properties>` (covering the
+  aggregator itself and, redundantly-but-harmlessly, `examples/*`, which
+  keep their pre-existing explicit stub too); each of the 9 publishable
+  modules overrides it back to `false` in its own `<properties>` — the same
+  override-in-the-child shape already used for `opendcb.version`/
+  `opendcb-axon.version`. Verified empirically before trusting it, per this
+  project's own "never guess a framework's API" convention applied to Maven
+  itself: `mvn help:effective-pom` on `eventstore-core` confirmed a
+  plain `<build><plugins>` binding at the root (the first fix attempted)
+  *does* inherit into every child's effective POM and would have wrongly
+  re-skipped deploy for all 9 publishable modules too — that approach was
+  reverted in favor of the property override, and `mvn help:effective-pom`
+  was re-run to confirm the root resolves `maven.deploy.skip=true` while all
+  9 publishable modules resolve `false`. `mvn -N deploy` at the root (no
+  altDeploymentRepository, no credentials) now exits `0` (skipped) instead
+  of reproducing the original error; a full `mvn clean install` across all
+  13 modules still passes with the property added.
+
+  Binding `gpg:sign` to the
   `verify` phase (which plain `mvn install` also runs) broke local builds
   with no configured GPG key, fixed via a `gpg.skip` property (root
   `pom.xml`, defaults `true`) referenced in the gpg-plugin's managed

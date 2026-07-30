@@ -44,6 +44,12 @@
         <tag>HEAD</tag>
     </scm>
 
+    <properties>
+        <!-- Overrides the root pom.xml's maven.deploy.skip=true default: this is one of the 9
+             publishable modules, so its deploy goal must actually run. -->
+        <maven.deploy.skip>false</maven.deploy.skip>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

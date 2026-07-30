@@ -113,6 +113,22 @@
           (`mvn clean deploy -P release`).
         -->
         <gpg.skip>true</gpg.skip>
+
+        <!--
+          maven-deploy-plugin's own `deploy` goal binds to every module in the reactor by default
+          (this aggregator POM itself included, since packaging=pom projects go through the deploy
+          phase too), regardless of whether central-publishing-maven-plugin is configured anywhere
+          else. This aggregator is never meant to be published itself — it exists purely to define
+          the reactor and shared config — and neither is anything under examples/*. Both rely on
+          this same maven.deploy.skip=true default (maven-deploy-plugin's `skip` parameter's own
+          built-in user property, confirmed via `mvn maven-deploy-plugin:3.1.4:help -Dgoal=deploy
+          -Ddetail=true` rather than assumed) so `mvn deploy`/`mvn clean deploy` never attempts to
+          upload them; examples/* additionally still declare an explicit, redundant-but-harmless
+          <skip>true</skip> plugin stub of their own from before this property existed. Each of the
+          9 publishable modules overrides this back to false in its own <properties>, the same
+          override-in-the-child pattern as opendcb.version/opendcb-axon.version above.
+        -->
+        <maven.deploy.skip>true</maven.deploy.skip>
     </properties>
 
     <modules>

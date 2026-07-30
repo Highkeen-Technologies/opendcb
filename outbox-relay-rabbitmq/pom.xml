@@ -45,6 +45,9 @@
     </scm>
 
     <properties>
+        <!-- Overrides the root pom.xml's maven.deploy.skip=true default: this is one of the 9
+             publishable modules, so its deploy goal must actually run. -->
+        <maven.deploy.skip>false</maven.deploy.skip>
         <amqp-client.version>5.30.0</amqp-client.version>
         <postgresql.version>42.7.4</postgresql.version>
         <testcontainers.version>1.21.4</testcontainers.version>

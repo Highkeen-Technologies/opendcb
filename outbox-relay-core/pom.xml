@@ -46,6 +46,9 @@
     </scm>
 
     <properties>
+        <!-- Overrides the root pom.xml's maven.deploy.skip=true default: this is one of the 9
+             publishable modules, so its deploy goal must actually run. -->
+        <maven.deploy.skip>false</maven.deploy.skip>
         <h2.version>2.3.232</h2.version>
     </properties>
 
