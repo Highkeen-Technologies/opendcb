@@ -3,8 +3,22 @@ name: Release to Maven Central
 # Manual-only trigger by design: a human must deliberately run this (or push a
 # release tag) — publishing must never happen as a side effect of an ordinary
 # push to main. See docs/ROADMAP.md's "Publishing target" open question.
+#
+# Fully tag-driven versioning (see docs/ROADMAP.md's "Versioning" section):
+# there is no committed "current release version" anywhere in this repo's
+# pom.xml files to bump. A tag push derives the version straight from the tag
+# name; a manual workflow_dispatch run has no tag to derive it from, so it
+# must be supplied explicitly via the required "version" input instead —
+# never guessed or defaulted.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Release version to publish (e.g. 1.2.3 or 1.2.3-rc.1). Required
+          because a manual run has no git tag to derive it from.
+        required: true
+        type: string
   push:
     tags:
       - 'v*.*.*'
@@ -12,12 +26,59 @@ on:
 permissions:
   contents: read
 
+env:
+  # The Axon Framework release this toolkit's Axon-coupled modules
+  # (integrations/eventstore-axon, bootstrap-axon-postgres,
+  # opendcb-axon-spring-boot-starter, opendcb-axon-spring-boot-routing) are
+  # built and qualified against — appended to opendcb-axon.version as
+  # "-${AXON_VERSION_QUALIFIER}". Bumped manually and deliberately, only when
+  # the project actually upgrades to a new Axon Framework release. NEVER
+  # derived from the release tag/version input: opendcb.version and
+  # opendcb-axon.version are two independent version lines (see
+  # docs/ROADMAP.md's "Versioning" section) — a plain 1.2.3 release tag says
+  # nothing about which Axon Framework version the Axon-coupled modules were
+  # built against.
+  AXON_VERSION_QUALIFIER: axon5.1
+
 jobs:
   publish:
     name: Build, sign, and stage a release on Maven Central
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      # Resolves the release version from whichever trigger fired this run,
+      # then validates it before anything else runs — a malformed tag or a
+      # typo'd manual input must fail loudly here, not silently produce a
+      # broken/partial release several minutes into the build.
+      #
+      # The workflow_dispatch input is passed in via `env:` rather than
+      # interpolated directly into the script body, per GitHub's own
+      # script-injection guidance for untrusted `${{ }}` values in `run:`.
+      - name: Resolve and validate release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            # Tag push, e.g. refs/tags/v1.2.3 -> GITHUB_REF_NAME=v1.2.3
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          # Semver-ish: X.Y.Z, optionally with a -qualifier suffix
+          # (e.g. 1.2.3, 1.2.3-rc.1). Anchored so a partial/garbage match
+          # can't sneak through.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a valid release version — expected X.Y.Z or X.Y.Z-qualifier (e.g. 1.2.3 or 1.2.3-rc.1). Check the pushed tag or the workflow_dispatch 'version' input."
+            exit 1
+          fi
+
+          AXON_VERSION="${VERSION}-${AXON_VERSION_QUALIFIER}"
+          echo "opendcb_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "opendcb_axon_version=$AXON_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing opendcb.version=$VERSION, opendcb-axon.version=$AXON_VERSION"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -67,6 +128,13 @@ jobs:
       # key, e.g. CI's own boundary-check/build jobs and every contributor's
       # laptop) — without this flag, artifacts would upload unsigned.
       #
+      # -Dopendcb.version / -Dopendcb-axon.version override the pom.xml
+      # properties' local-dev defaults with the values resolved and validated
+      # above; flatten-maven-plugin (root pom.xml pluginManagement,
+      # flattenMode=ossrh) bakes those resolved values into the flattened POM
+      # actually deployed, so Maven Central never sees the unresolved
+      # "${opendcb.version}" property reference.
+      #
       # autoPublish is deliberately NOT set anywhere in this pipeline: the
       # central-publishing-maven-plugin uploads and validates a deployment
       # bundle, but a human must still sign in to central.sonatype.com and
@@ -80,4 +148,7 @@ jobs:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn --batch-mode clean deploy -DskipTests=false -P release
+        run: >
+          mvn --batch-mode clean deploy -DskipTests=false -P release
+          -Dopendcb.version=${{ steps.version.outputs.opendcb_version }}
+          -Dopendcb-axon.version=${{ steps.version.outputs.opendcb_axon_version }}

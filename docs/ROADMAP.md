@@ -630,13 +630,14 @@ events).
   by name.
 - **Versioning:** RESOLVED — modules split into two independently-versioned
   groups, since framework-agnostic modules don't share Axon's release
-  cadence. Root aggregator `pom.xml` defines two properties:
-  `opendcb.version` (`1.0.0`) for the framework-agnostic group
-  (`eventstore-core`, `eventstore-postgres`/`-mysql`/`-mongo`,
-  `outbox-relay-core`/`-kafka`/`-rabbitmq`/`-webhook`,
-  `opendcb-scheduling-core`), and `opendcb-axon.version` (`1.0.0-axon5.1`,
-  qualified with the Axon Framework version it's built against) for the
-  Axon-tied group (`integrations/eventstore-axon`, `bootstrap-axon-postgres`,
+  cadence, and versioning is now fully tag-driven end to end: no commit or PR
+  ever exists solely to bump a version number in a `pom.xml`.
+
+  Root aggregator `pom.xml` defines two properties: `opendcb.version` for the
+  framework-agnostic group (`eventstore-core`, `eventstore-postgres`/`-mysql`/
+  `-mongo`, `outbox-relay-core`/`-kafka`/`-rabbitmq`/`-webhook`,
+  `opendcb-scheduling-core`), and `opendcb-axon.version` for the Axon-tied
+  group (`integrations/eventstore-axon`, `bootstrap-axon-postgres`,
   `opendcb-axon-spring-boot-starter`, `opendcb-axon-spring-boot-routing`).
   Each member of a group declares its own explicit `<version>` (e.g.
   `<version>${opendcb.version}</version>`), overriding the version it would
@@ -651,7 +652,68 @@ events).
   groups diverge. `examples/*` modules keep no `<version>` override at all
   and simply inherit the aggregator's version unchanged, since they're not
   meant to be published or depended on externally; each carries a one-line
-  comment explaining why. Verified end-to-end: `mvn clean install` from a
+  comment explaining why.
+
+  The committed values of `opendcb.version` (`1.0.0`) and
+  `opendcb-axon.version` (`1.0.0-axon5.1`) are LOCAL-DEV DEFAULTS ONLY, not
+  "the current release version" — a plain local `mvn install` with no `-D`
+  override just uses whatever's committed, which is fine since that build is
+  never published. The real, tag-driven scheme:
+
+  1. A release is cut by pushing a `vX.Y.Z` tag (e.g. `v1.2.3`), or by
+     running `.github/workflows/release.yml` manually via
+     `workflow_dispatch`, which requires an explicit `version` input
+     (`required: true`) since a manual run has no tag to derive one from —
+     never a guessed or defaulted version.
+  2. The workflow's "Resolve and validate release version" step extracts the
+     version from `${GITHUB_REF_NAME}` (tag push, stripping the leading `v`)
+     or from the `version` input (`workflow_dispatch`), then validates it
+     against a semver-shaped pattern (`X.Y.Z`, optionally `-qualifier`) and
+     fails the run immediately with `::error::` if it doesn't match, rather
+     than letting a malformed tag silently reach `mvn deploy`.
+  3. A workflow-level `AXON_VERSION_QUALIFIER` constant near the top of
+     `release.yml` (currently `axon5.1`) is appended to the resolved version
+     to build `opendcb-axon.version` (e.g. `1.2.3-axon5.1`). This constant is
+     bumped manually and deliberately only when the project upgrades to a new
+     Axon Framework release — it is never derived from the release tag/
+     version, since the two version lines are independent: a `1.2.3` release
+     tag says nothing about which Axon Framework version the Axon-coupled
+     modules were built against.
+  4. The `mvn --batch-mode clean deploy -P release` step passes both resolved
+     values on the command line as `-Dopendcb.version=...` and
+     `-Dopendcb-axon.version=...`, overriding the committed local-dev
+     defaults for that build only.
+  5. `flatten-maven-plugin` (`org.codehaus.mojo`, `1.8.0` — looked up from
+     Maven Central directly, not assumed) resolves those now-overridden
+     properties into a generated, literal-valued flattened POM that
+     transparently replaces the original `pom.xml` for install/deploy
+     purposes, so the POM actually uploaded to Maven Central contains a real
+     version number, never the unresolved text `${opendcb.version}`.
+     `flattenMode=ossrh` was chosen deliberately over the plugin's own
+     `resolveCiFriendliesOnly` mode — verified against the plugin's
+     `flatten-mojo.html`/`usage.html` docs, not assumed: `resolveCiFriendliesOnly`
+     only resolves the three specific, plugin-reserved property names
+     `revision`/`sha1`/`changelist` (Maven's "CI Friendly Versions"
+     convention), and this project's own custom property names
+     (`opendcb.version`/`opendcb-axon.version`) don't match those, so that
+     mode would leave them unresolved — silently defeating the purpose.
+     `ossrh` mode instead computes the full effective POM (resolving every
+     property placeholder, custom-named or not) while keeping exactly the
+     optional POM elements Sonatype's OSS Repository-Hosting requirements
+     need (name, description, url, licenses, developers, scm) and stripping
+     the rest. Bound via the plugin's own documented execution pattern: the
+     `flatten` goal in the `process-resources` phase (early enough that
+     compile/test/package/install/deploy all see the flattened POM), and the
+     `clean` goal (its own default binding to the `clean` lifecycle) to
+     delete the generated `.flattened-pom.xml` so it never lingers as an
+     untracked file. Declared once in the root `pom.xml`'s `pluginManagement`
+     and opted into per-module via the same minimal `<build><plugins>` stub
+     pattern as the other Central-publishing plugins, in each of the 9
+     publishable modules (`examples/*` never opts in, matching the existing
+     pattern).
+
+  Verified end-to-end pre-`flatten-maven-plugin` (still holds with it added,
+  confirmed via a fresh `mvn clean install`): `mvn clean install` from a
   `.m2` cache with the prior `0.1.0-SNAPSHOT` artifacts deliberately removed
   first (so a stale cache couldn't mask a misconfiguration) produces
   `BUILD SUCCESS` across all 13 modules, and `mvn dependency:tree` on
@@ -659,14 +721,14 @@ events).
   `shipping-service` each confirm the resolved coordinates land at the
   correct explicit version per module (e.g. `bootstrap-axon-postgres`
   resolves `eventstore-axon:1.0.0-axon5.1` and `eventstore-postgres:1.0.0`
-  side by side, not a shared version). One known trade-off: Maven emits a
-  "'version' contains an expression but should be a constant" warning for
-  every module using a property in `<version>` — a documented soft
-  limitation of this pattern (mvn.io/docs), harmless for a same-reactor
-  build like this one, but worth revisiting with the `flatten-maven-plugin`
-  before actually publishing to Maven Central, since a consumer resolving
-  a dependency from a remote repo needs the literal version already
-  substituted into the POM, not the property reference.
+  side by side, not a shared version). The previously-noted "'version'
+  contains an expression but should be a constant" Maven warning is now a
+  non-issue for anything published externally: `flatten-maven-plugin`
+  resolves it away in the POM that actually ships to Maven Central; it's
+  still visible during a plain local reactor build, which is harmless.
+  Deploying to Maven Central itself (real secrets, a real pushed tag) is
+  outside what a coding session can verify locally — see the "does NOT yet
+  cover" note above.
 - **Schema evolution:** RESOLVED (partially) — `integrations/eventstore-axon`
   now uses Axon's real `Converter` SPI (`JacksonConverter`) for payload
   (de)serialization instead of an ad-hoc `ObjectMapper`. Upcasting remains

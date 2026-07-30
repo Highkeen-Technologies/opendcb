@@ -90,6 +90,17 @@
           This aggregator POM's own <version> (above) is not published or depended on by anything
           external; examples/* (not meant to be depended on externally either) are the only
           modules that inherit it unchanged, for simplicity.
+
+          IMPORTANT — these two values below are LOCAL-DEV DEFAULTS ONLY, not "the current release
+          version": a real release is always tag-driven (push a v X.Y.Z tag, or supply one via the
+          workflow_dispatch "version" input) and .github/workflows/release.yml resolves/validates
+          that tag/input, then overrides these properties on the command line via
+          -Dopendcb.version=... -Dopendcb-axon.version=...-<axon-qualifier>, which
+          flatten-maven-plugin (below) bakes into the POM actually published to Maven Central. A
+          plain local `mvn install` with no -D override just uses whatever's committed here, which
+          is fine since nothing gets published that way. Consequently, NO commit or PR should ever
+          exist whose sole purpose is bumping these two numbers going forward — see
+          docs/ROADMAP.md's "Versioning" section for the full scheme.
         -->
         <opendcb.version>1.0.0</opendcb.version>
         <opendcb-axon.version>1.0.0-axon5.1</opendcb-axon.version>
@@ -278,6 +289,66 @@
                     <!-- 3.1.4 is the latest STABLE release; maven-metadata.xml's release/latest
                          tags currently point at 4.0.0-beta-2, a beta not used here. -->
                     <version>3.1.4</version>
+                </plugin>
+                <plugin>
+                    <!--
+                      Resolves ${opendcb.version} / ${opendcb-axon.version} (and the parent
+                      reference) down to real, literal values in a generated flattened POM, which
+                      transparently replaces the original pom.xml for install/deploy purposes.
+                      Without this, the POM actually published to Maven Central would contain the
+                      literal, unresolved text "${opendcb.version}" as its <version>, since Central
+                      serves POMs to consumers as-is with no property substitution.
+
+                      flattenMode=ossrh (not the default "defaults" mode, and deliberately not
+                      "resolveCiFriendliesOnly") — verified against the plugin's own
+                      flatten-mojo.html/usage.html docs rather than assumed:
+                        - "resolveCiFriendliesOnly" only resolves the three specific,
+                          plugin-reserved property names revision/sha1/changelist (Maven's own "CI
+                          Friendly Versions" convention; revision's name is the only one
+                          reconfigurable, via revisionVariableName, added in 1.8.0). This project
+                          uses its own two custom property names instead
+                          (opendcb.version/opendcb-axon.version), which that mode would NOT
+                          resolve — it would leave them as literal unresolved property references
+                          in the flattened POM, silently defeating the whole point.
+                        - The other, non-CI-friendly modes (oss/ossrh/defaults/clean/bom) instead
+                          compute the full effective POM and resolve EVERY property placeholder,
+                          including custom-named ones, into literal values — this is what a normal
+                          <version>${opendcb.version}</version> needs.
+                        - "ossrh" specifically is the preset purpose-built to keep exactly the
+                          optional POM elements Sonatype's OSS Repository-Hosting requirements
+                          need (name, description, url, licenses, developers, scm — already
+                          verified inherited correctly per-module) while stripping everything else
+                          (the now-redundant, already-resolved <properties>, build config, etc.) —
+                          matching this project's Central-publishing use case precisely.
+
+                      Execution bindings match the plugin's own documented usage example: the
+                      `flatten` goal runs in `process-resources` (early enough that every later
+                      phase — compile, test, package, install, deploy — sees the flattened POM),
+                      and the `clean` goal (no explicit phase — it declares its own default binding
+                      to the `clean` lifecycle) deletes the generated .flattened-pom.xml so it never
+                      lingers as an untracked file between builds.
+                    -->
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>flatten-maven-plugin</artifactId>
+                    <version>1.8.0</version>
+                    <configuration>
+                        <flattenMode>ossrh</flattenMode>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>flatten</id>
+                            <phase>process-resources</phase>
+                            <goals>
+                                <goal>flatten</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>flatten.clean</id>
+                            <goals>
+                                <goal>clean</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
             </plugins>
         </pluginManagement>
