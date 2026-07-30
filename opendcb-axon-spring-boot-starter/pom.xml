@@ -41,6 +41,14 @@
         module in this toolkit that depends on Spring; the root parent pom
         stays Spring-free.
     </description>
+    <url>https://github.com/Highkeen-Technologies/opendcb</url>
+
+    <scm>
+        <connection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</connection>
+        <developerConnection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</developerConnection>
+        <url>https://github.com/Highkeen-Technologies/opendcb</url>
+        <tag>HEAD</tag>
+    </scm>
 
     <properties>
         <spring-boot-dependencies.version>4.1.0</spring-boot-dependencies.version>
@@ -99,4 +107,28 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Maven Central publishing: version/config inherited from the root pom.xml's
+                 pluginManagement; see the comment there for why examples/* don't declare these. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <extensions>true</extensions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

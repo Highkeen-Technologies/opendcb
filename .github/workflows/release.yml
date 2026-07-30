@@ -1,0 +1,83 @@
+name: Release to Maven Central
+
+# Manual-only trigger by design: a human must deliberately run this (or push a
+# release tag) — publishing must never happen as a side effect of an ordinary
+# push to main. See docs/ROADMAP.md's "Publishing target" open question.
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build, sign, and stage a release on Maven Central
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Confirm Docker is available (required for Testcontainers)
+        run: docker version
+
+      # crazy-max/ghaction-import-gpg: current, actively maintained action for
+      # importing a GPG key into the runner's keyring. Also caches the
+      # passphrase in gpg-agent, which maven-gpg-plugin's useAgent=true
+      # (the plugin's default) can pick up directly. The private key and
+      # passphrase are read from GitHub secrets by name only — their values
+      # never appear in this file.
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v7
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      # Writes only the literal placeholder text ${env.CENTRAL_USERNAME} /
+      # ${env.CENTRAL_PASSWORD} to disk — Maven resolves these from the
+      # environment at build time (see the mvn step below), so the actual
+      # secret values are never written to a file or echoed to a log.
+      - name: Configure Maven settings.xml
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<'EOF'
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+            <servers>
+              <server>
+                <id>central</id>
+                <username>${env.CENTRAL_USERNAME}</username>
+                <password>${env.CENTRAL_PASSWORD}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      # -P release flips the root pom.xml's gpg.skip property to false (it
+      # defaults to true so plain `mvn install` works on machines with no GPG
+      # key, e.g. CI's own boundary-check/build jobs and every contributor's
+      # laptop) — without this flag, artifacts would upload unsigned.
+      #
+      # autoPublish is deliberately NOT set anywhere in this pipeline: the
+      # central-publishing-maven-plugin uploads and validates a deployment
+      # bundle, but a human must still sign in to central.sonatype.com and
+      # click "Publish" after reviewing it. Central is immutable — a version
+      # published there can never be removed or modified — so the first
+      # (and every) release goes out as a deliberate, reviewed action, not an
+      # automatic one. Switching to autoPublish=true is a decision to revisit
+      # later, not an oversight — see docs/ROADMAP.md.
+      - name: Build, test, sign, and stage the release
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: mvn --batch-mode clean deploy -DskipTests=false -P release

@@ -39,6 +39,27 @@
         </license>
     </licenses>
 
+    <developers>
+        <developer>
+            <name>Samik Roy</name>
+            <organization>Highkeen Technologies</organization>
+            <organizationUrl>https://highkeen.com</organizationUrl>
+        </developer>
+    </developers>
+
+    <!--
+      <url> and <scm> are deliberately NOT declared here for inheritance. Maven's default
+      inheritance behavior for these elements appends the child module's artifactId to the
+      parent's value (see maven.apache.org/pom.html#Inheritance and the Maven Model Builder's
+      "Inheritance Assembly" docs), which would silently turn this mono-repo's single GitHub
+      URL and git SCM URL into a broken per-module path (e.g. ".../opendcb/eventstore-core"
+      instead of a valid GitHub URL, and a git clone URL with a bogus path segment appended).
+      Maven 3.6.1+ offers child.*.inherit.append.path="false" attributes to suppress that, but
+      relying on an obscure, easy-to-get-wrong attribute for metadata that becomes immutable
+      once published to Maven Central is not worth the risk versus just repeating the identical,
+      correct literal values in each of the 9 publishable modules below.
+    -->
+
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -72,6 +93,15 @@
         -->
         <opendcb.version>1.0.0</opendcb.version>
         <opendcb-axon.version>1.0.0-axon5.1</opendcb-axon.version>
+
+        <!--
+          gpg:sign is bound to the verify phase (below), which plain `mvn clean install` also
+          runs through, so signing must not be a default part of every local/CI build, since it
+          requires a GPG key most machines running `install` don't have. Default to skipping it;
+          the "release" profile below flips this to false for the real publish flow
+          (`mvn clean deploy -P release`).
+        -->
+        <gpg.skip>true</gpg.skip>
     </properties>
 
     <modules>
@@ -139,7 +169,133 @@
                     <artifactId>maven-jar-plugin</artifactId>
                     <version>3.5.0</version>
                 </plugin>
+
+                <!--
+                  Maven Central publishing prerequisites (see docs/ROADMAP.md's "Publishing
+                  target" open question). Declared here in pluginManagement so version and
+                  execution config live in one place, but NOT bound to <build><plugins> in this
+                  parent POM: that would apply to every child, including examples/*, which are
+                  deliberately never published. Each of the 9 publishable modules opts in with its
+                  own minimal <build><plugins> stub referencing these by groupId/artifactId only;
+                  examples/* modules declare nothing extra, so these plugins are configured but
+                  never actually invoked for them. Verified against Maven's documented
+                  pluginManagement merge behavior: version and <configuration>/<executions> DO
+                  merge down from pluginManagement into a plugin a child module declares, so the
+                  per-module stubs below don't need to repeat any of that.
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-source-plugin</artifactId>
+                    <!-- 3.4.0 is the latest STABLE release; maven-metadata.xml's <release> tag
+                         currently points at 4.0.0-beta-1, a beta not used here. -->
+                    <version>3.4.0</version>
+                    <executions>
+                        <execution>
+                            <id>attach-sources</id>
+                            <goals>
+                                <goal>jar-no-fork</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <version>3.12.0</version>
+                    <executions>
+                        <execution>
+                            <id>attach-javadocs</id>
+                            <goals>
+                                <goal>jar</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <!--
+                      Signs every attached artifact (jar, sources jar, javadoc jar) at deploy
+                      time, required by Maven Central. No passphrase is configured here, and
+                      none may ever be committed to this repo: gpg:sign's useAgent parameter
+                      (gpg.useagent, default true) delegates passphrase supply to a locally primed
+                      gpg-agent with zero Maven config, and for CI/batch use its
+                      passphraseEnvName parameter (gpg.passphraseEnvName, default
+                      MAVEN_GPG_PASSPHRASE, since plugin 3.2.0) reads the passphrase from an
+                      environment variable instead; both are the plugin's own current,
+                      non-deprecated recommendation (its older passphrase/passphraseServerId
+                      parameters are deprecated specifically because they risk leaking the
+                      secret). Whoever runs the real `mvn deploy` sets MAVEN_GPG_PASSPHRASE (or
+                      primes gpg-agent) in their own environment; this POM stays credential-free.
+                    -->
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-gpg-plugin</artifactId>
+                    <version>3.2.8</version>
+                    <configuration>
+                        <skip>${gpg.skip}</skip>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>sign-artifacts</id>
+                            <phase>verify</phase>
+                            <goals>
+                                <goal>sign</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <!--
+                      Uploads to Maven Central via the current (2025+) Central Publisher Portal
+                      API, replacing the old OSSRH/Nexus staging workflow that was shut down
+                      2025-06-30. autoPublish is deliberately NOT set (defaults to false): the
+                      first release should land as a manual-publish deployment, reviewed at
+                      central.sonatype.com before it goes live, since Central is immutable: a
+                      published version can never be removed or modified afterward. Credentials
+                      (a Central Portal user token, generated from a Sonatype account) belong in
+                      settings.xml's <server id="central"> block matching publishingServerId
+                      below, never in this POM.
+                    -->
+                    <groupId>org.sonatype.central</groupId>
+                    <artifactId>central-publishing-maven-plugin</artifactId>
+                    <version>0.11.0</version>
+                    <extensions>true</extensions>
+                    <configuration>
+                        <publishingServerId>central</publishingServerId>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <!--
+                      examples/* modules build with this same parent, so maven-deploy-plugin's
+                      default deploy goal (bound to the deploy phase for every module regardless
+                      of central-publishing-maven-plugin's presence elsewhere) would otherwise
+                      still attempt to deploy them. They aren't publishable library artifacts (see
+                      docs/ARCHITECTURE.md's module list), so each examples/* module declares this
+                      plugin in its own build/plugins with skip=true. Declared here only for a
+                      pinned, grounded version, not bound to build/plugins in this parent, same
+                      pattern as the Central-publishing plugins above.
+                    -->
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-deploy-plugin</artifactId>
+                    <!-- 3.1.4 is the latest STABLE release; maven-metadata.xml's release/latest
+                         tags currently point at 4.0.0-beta-2, a beta not used here. -->
+                    <version>3.1.4</version>
+                </plugin>
             </plugins>
         </pluginManagement>
     </build>
+
+    <!--
+      Activate with `mvn clean deploy -P release` for the real Maven Central publish flow.
+      Everything else (source/javadoc attachment, the central-publishing-maven-plugin upload
+      binding to the deploy phase) is already wired unconditionally in each of the 9 publishable
+      modules; the only thing gated behind this profile is turning GPG signing back on, since
+      that's the one step plain `mvn clean install` must not attempt without a configured key.
+    -->
+    <profiles>
+        <profile>
+            <id>release</id>
+            <properties>
+                <gpg.skip>false</gpg.skip>
+            </properties>
+        </profile>
+    </profiles>
 </project>

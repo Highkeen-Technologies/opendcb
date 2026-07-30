@@ -542,9 +542,92 @@ events).
 
 ## Open questions worth deciding before writing more code
 
-- **Publishing target:** GitHub under a Highkeen org + Maven Central via
-  Sonatype, or internal to Highkeen first, open-sourced once proven on real
-  client engagements?
+- **Publishing target:** RESOLVED — GitHub under the Highkeen-Technologies
+  org (already done; see the repo's own remote) + Maven Central, via the
+  current (2025+) Central Publisher Portal, not the old OSSRH/Nexus staging
+  workflow (shut down 2025-06-30). POM preparation for the 9 publishable
+  modules (`eventstore-core`, `eventstore-postgres`,
+  `integrations/eventstore-axon`, `bootstrap-axon-postgres`,
+  `opendcb-axon-spring-boot-starter`, `opendcb-axon-spring-boot-routing`,
+  `outbox-relay-core`, `outbox-relay-rabbitmq`, `opendcb-scheduling-core` —
+  `examples/*` deliberately excluded, since those aren't meant to be
+  depended on externally) is DONE: `<name>`, `<description>`, `<url>`,
+  `<scm>` on every one of the 9 (verified against Maven's own inheritance
+  rules that `<licenses>`/`<developers>`/`<description>` inherit as-is from
+  the root `pom.xml` so they're declared there once, while `<name>` never
+  inherits and `<url>`/`<scm>` inherit but with the child's artifactId
+  auto-appended to the parent's value — which would corrupt this mono-repo's
+  single GitHub/git URLs — so those three are repeated explicitly, and
+  identically, in each of the 9 modules instead of relying on inheritance);
+  `maven-source-plugin` (3.4.0, the latest stable — not the `4.0.0-beta-1`
+  Maven Central currently lists as `<release>`) and `maven-javadoc-plugin`
+  (3.12.0) wired to attach `-sources.jar`/`-javadoc.jar`;
+  `central-publishing-maven-plugin` (`org.sonatype.central`, 0.11.0 — looked
+  up from Maven Central directly, not assumed) with
+  `<extensions>true</extensions>` and `publishingServerId=central`,
+  deliberately without `autoPublish=true` yet, so the first release lands as
+  a manual-publish deployment reviewable at central.sonatype.com before
+  going live (Central is immutable — a published version can never be
+  removed or modified); `maven-gpg-plugin` (3.2.8) wired to sign every
+  artifact at deploy time with no passphrase in this repo — it relies on the
+  plugin's own current, non-deprecated `useAgent`/`passphraseEnvName`
+  (`MAVEN_GPG_PASSPHRASE`) mechanisms instead of its deprecated
+  `passphrase`/`passphraseServerId` parameters. All four plugins are
+  declared once in the root `pom.xml`'s `pluginManagement` and opted into
+  per-module via a minimal `<build><plugins>` stub in each of the 9 — so
+  `examples/*` never triggers them, without needing an explicit `<skip>` on
+  each example module. `maven-deploy-plugin`'s own default `deploy` binding
+  is separate from all four of the above, though: it runs for every module
+  in the reactor regardless of what `central-publishing-maven-plugin` does
+  elsewhere, so each of the 3 `examples/*` modules additionally declares
+  `maven-deploy-plugin` (3.1.4, the latest stable — not the `4.0.0-beta-2`
+  Maven Central currently lists as `<release>`/`<latest>`) directly in its
+  own `<build><plugins>` with `<skip>true</skip>`, so `mvn deploy`/`mvn
+  clean deploy` never attempts to publish them. Binding `gpg:sign` to the
+  `verify` phase (which plain `mvn install` also runs) broke local builds
+  with no configured GPG key, fixed via a `gpg.skip` property (root
+  `pom.xml`, defaults `true`) referenced in the gpg-plugin's managed
+  `<configuration><skip>${gpg.skip}</skip></configuration>`, flipped to
+  `false` only inside a `release` Maven profile (`mvn clean deploy -P
+  release`) — so CI's actual publish step must pass `-P release` or signing
+  silently no-ops.
+
+  GitHub Actions automation is now DONE too:
+  `.github/workflows/release.yml` runs on `workflow_dispatch` (manual) or a
+  pushed `v*.*.*` tag — deliberately no automatic trigger on an ordinary
+  push to main, since publishing must always be a deliberate human action.
+  It checks out, sets up JDK 21, imports the GPG key via
+  `crazy-max/ghaction-import-gpg` (current, actively maintained; also seeds
+  `gpg-agent`'s passphrase cache for `maven-gpg-plugin`'s `useAgent`),
+  writes `~/.m2/settings.xml` containing only the literal placeholder text
+  `${env.CENTRAL_USERNAME}`/`${env.CENTRAL_PASSWORD}` (Maven resolves these
+  from the environment at build time — the real values are never written to
+  a file or echoed to a log), then runs `mvn --batch-mode clean deploy
+  -DskipTests=false -P release` with `CENTRAL_USERNAME`, `CENTRAL_PASSWORD`,
+  and `MAVEN_GPG_PASSPHRASE` set from the `CENTRAL_USERNAME`,
+  `CENTRAL_PASSWORD`, and `GPG_PASSPHRASE` GitHub repo secrets respectively
+  (`GPG_PRIVATE_KEY` feeds the GPG-import step). All four secrets are
+  referenced by name only via `${{ secrets.* }}` — no credential value is
+  ever hardcoded anywhere in this repo. Confirmed GitHub-hosted
+  `ubuntu-latest` runners ship Docker preinstalled, so the Testcontainers-
+  based test suite (required to pass before anything publishes, per
+  `-DskipTests=false`) needs no extra runner setup. As with the plugin
+  config above, `autoPublish` is deliberately never set in this workflow:
+  `central-publishing-maven-plugin` uploads and validates a deployment
+  bundle, but a human must still sign in to central.sonatype.com and click
+  "Publish" after reviewing it, since Central is immutable — switching to
+  `autoPublish=true` once the manual-review step has proven itself over a
+  few releases is a deliberate future decision to revisit, not an
+  oversight.
+
+  What this preparation does NOT yet cover, and needs doing outside any
+  coding session before the real first release-tag push: a Sonatype Central
+  account + verified `com.highkeen.opendcb` namespace, a generated Central
+  Portal user token, and a real GPG keypair (public key published to a
+  keyserver) — these must be provisioned and then stored as the
+  `CENTRAL_USERNAME`, `CENTRAL_PASSWORD`, `GPG_PRIVATE_KEY`, and
+  `GPG_PASSPHRASE` GitHub repo secrets that `release.yml` already references
+  by name.
 - **Versioning:** RESOLVED — modules split into two independently-versioned
   groups, since framework-agnostic modules don't share Axon's release
   cadence. Root aggregator `pom.xml` defines two properties:
