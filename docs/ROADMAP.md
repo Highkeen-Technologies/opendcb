@@ -681,20 +681,20 @@ events).
 - **Publishing target:** RESOLVED — GitHub under the Highkeen-Technologies
   org (already done; see the repo's own remote) + Maven Central, via the
   current (2025+) Central Publisher Portal, not the old OSSRH/Nexus staging
-  workflow (shut down 2025-06-30). POM preparation for the 9 publishable
+  workflow (shut down 2025-06-30). POM preparation for the 10 publishable
   modules (`eventstore-core`, `eventstore-postgres`,
   `integrations/eventstore-axon`, `bootstrap-axon-postgres`,
   `opendcb-axon-spring-boot-starter`, `opendcb-axon-spring-boot-routing`,
-  `outbox-relay-core`, `outbox-relay-rabbitmq`, `opendcb-scheduling-core` —
-  `examples/*` deliberately excluded, since those aren't meant to be
-  depended on externally) is DONE: `<name>`, `<description>`, `<url>`,
-  `<scm>` on every one of the 9 (verified against Maven's own inheritance
+  `outbox-relay-core`, `outbox-relay-rabbitmq`, `opendcb-scheduling-core`,
+  `opendcb-conductor-bridge` — `examples/*` deliberately excluded, since
+  those aren't meant to be depended on externally) is DONE: `<name>`,
+  `<description>`, `<url>`, `<scm>` on every one of the 10 (verified against Maven's own inheritance
   rules that `<licenses>`/`<developers>`/`<description>` inherit as-is from
   the root `pom.xml` so they're declared there once, while `<name>` never
   inherits and `<url>`/`<scm>` inherit but with the child's artifactId
   auto-appended to the parent's value — which would corrupt this mono-repo's
   single GitHub/git URLs — so those three are repeated explicitly, and
-  identically, in each of the 9 modules instead of relying on inheritance);
+  identically, in each of the 10 modules instead of relying on inheritance);
   `maven-source-plugin` (3.4.0, the latest stable — not the `4.0.0-beta-1`
   Maven Central currently lists as `<release>`) and `maven-javadoc-plugin`
   (3.12.0) wired to attach `-sources.jar`/`-javadoc.jar`;
@@ -710,7 +710,7 @@ events).
   (`MAVEN_GPG_PASSPHRASE`) mechanisms instead of its deprecated
   `passphrase`/`passphraseServerId` parameters. All four plugins are
   declared once in the root `pom.xml`'s `pluginManagement` and opted into
-  per-module via a minimal `<build><plugins>` stub in each of the 9 — so
+  per-module via a minimal `<build><plugins>` stub in each of the 10 — so
   `examples/*` never triggers them, without needing an explicit `<skip>` on
   each example module. `maven-deploy-plugin`'s own default `deploy` binding
   is separate from all four of the above, though: it runs for every module
@@ -886,7 +886,7 @@ events).
      delete the generated `.flattened-pom.xml` so it never lingers as an
      untracked file. Declared once in the root `pom.xml`'s `pluginManagement`
      and opted into per-module via the same minimal `<build><plugins>` stub
-     pattern as the other Central-publishing plugins, in each of the 9
+     pattern as the other Central-publishing plugins, in each of the 10
      publishable modules (`examples/*` never opts in, matching the existing
      pattern).
 

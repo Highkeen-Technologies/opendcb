@@ -51,13 +51,9 @@
     </scm>
 
     <properties>
-        <!--
-          Deliberately NOT overriding maven.deploy.skip (stays true, inherited from the root
-          pom.xml): docs/ROADMAP.md's "Publishing target" section enumerates exactly 9 publishable
-          modules and this is not one of them yet. Revisit alongside adding the Maven Central
-          publishing plugin stub (matching integrations/eventstore-axon's pattern) once this module
-          is ready to publish.
-        -->
+        <!-- Overrides the root pom.xml's maven.deploy.skip=true default: this is now one of the
+             publishable modules, so its deploy goal must actually run. -->
+        <maven.deploy.skip>false</maven.deploy.skip>
         <conductor-client.version>3.9.31-orkes</conductor-client.version>
         <postgresql.version>42.7.4</postgresql.version>
         <testcontainers.version>1.21.4</testcontainers.version>
@@ -146,4 +142,32 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Maven Central publishing: version/config inherited from the root pom.xml's
+                 pluginManagement; see the comment there for why examples/* don't declare these. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <extensions>true</extensions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
 </project>
