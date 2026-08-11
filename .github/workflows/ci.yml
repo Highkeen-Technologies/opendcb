@@ -22,21 +22,26 @@ jobs:
           fi
           echo "OK: no io.axoniq.framework references found."
 
-      - name: No org.axonframework inside eventstore-core or any eventstore-<provider> module
+      - name: No org.axonframework inside eventstore-core, any eventstore-<provider> module, or opendcb-scheduling-core
         shell: bash
         run: |
+          dirs_to_check=()
+          for d in eventstore-*/; do
+            dirs_to_check+=("${d%/}/src")
+          done
+          dirs_to_check+=("opendcb-scheduling-core/src")
+
           violations=0
-          for dir in eventstore-*/; do
-            dir="${dir%/}"
-            if [ -d "$dir/src" ] && grep -rln "org.axonframework" "$dir/src" --include="*.java"; then
-              echo "::error::org.axonframework import found inside $dir/src — framework coupling only belongs in integrations/eventstore-<framework>, see docs/ARCHITECTURE.md"
+          for dir in "${dirs_to_check[@]}"; do
+            if [ -d "$dir" ] && grep -rlnE "^import org\.axonframework\." "$dir" --include="*.java"; then
+              echo "::error::org.axonframework import found inside $dir — framework coupling only belongs in integrations/eventstore-<framework> (or, for the documented opendcb-conductor-bridge exception, its own module), see docs/ARCHITECTURE.md"
               violations=1
             fi
           done
           if [ "$violations" -ne 0 ]; then
             exit 1
           fi
-          echo "OK: no org.axonframework references inside eventstore-core or eventstore-<provider> modules."
+          echo "OK: no org.axonframework imports inside eventstore-core, eventstore-<provider>, or opendcb-scheduling-core."
 
       - name: No org.springframework outside the Spring-specific modules
         shell: bash
@@ -52,10 +57,12 @@ jobs:
             dirs_to_check+=("${d%/}/src")
           done
           dirs_to_check+=("outbox-relay-core/src")
+          dirs_to_check+=("opendcb-scheduling-core/src")
+          dirs_to_check+=("opendcb-conductor-bridge/src")
 
           violations=0
           for dir in "${dirs_to_check[@]}"; do
-            if [ -d "$dir" ] && grep -rln "org.springframework" "$dir" --include="*.java"; then
+            if [ -d "$dir" ] && grep -rlnE "^import org\.springframework\." "$dir" --include="*.java"; then
               echo "::error::org.springframework import found inside $dir — Spring coupling only belongs in *-spring-boot-starter / *-spring-boot-routing modules, see docs/CONVENTIONS.md"
               violations=1
             fi
@@ -63,7 +70,7 @@ jobs:
           if [ "$violations" -ne 0 ]; then
             exit 1
           fi
-          echo "OK: no org.springframework references outside the Spring-specific modules."
+          echo "OK: no org.springframework imports outside the Spring-specific modules."
 
   build:
     name: Build and test (full reactor)

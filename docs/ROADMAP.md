@@ -234,6 +234,133 @@ opendcb/
 │   succeeding.
 │   Depends on: eventstore-core only.
 │
+├── opendcb-conductor-bridge/
+│   Saga/process-manager support via Conductor OSS
+│   (github.com/conductor-oss/conductor, Apache 2.0, actively maintained by
+│   Orkes + community, in production at Netflix/Tesla/LinkedIn/J.P. Morgan
+│   scale — verified directly against its source and docs, not assumed),
+│   not a hand-built saga engine. See docs/ARCHITECTURE.md's
+│   "opendcb-conductor-bridge" section for the full rationale: a hand-built
+│   saga engine needs the same order of crash-recovery/exactly-once rigor
+│   every other correctness-critical module here has been held to, and
+│   that's materially more surface area than opendcb-scheduling-core was —
+│   adopting a battle-tested engine here is the pragmatic call, not a
+│   shortcut.
+│   Confirmed via Conductor's own repo: `postgres-persistence` is a
+│   first-class module (real Flyway migrations, Testcontainers-backed
+│   tests) — fits OpenDCB's self-hosted-Postgres philosophy without forcing
+│   Cassandra/Elasticsearch/Redis just to run it. Use a separate database
+│   (or at minimum a separate schema) from eventstore-postgres's own
+│   tables — Conductor owns and migrates its own schema independently.
+│   Honest trade-off, not glossed over: Conductor runs as its own server —
+│   same category of thing as Axon Server, and a genuine departure from
+│   every other module in this toolkit, which has deliberately avoided
+│   requiring any extra service beyond Postgres + your own JVM. Unlike
+│   Axon Server there's no paid-tier tension (Conductor is free at every
+│   level), so the cost here is purely operational, not licensing.
+│   Compensation is via a `failureWorkflow` you write yourself, NOT
+│   automatic per-task undo — worth stating precisely since marketing copy
+│   can overstate this: Conductor triggers your designated failure
+│   workflow on main-workflow failure and passes it structured context
+│   (reason, workflowId, failureTaskId, the full failed workflow's
+│   execution JSON), but the actual reverse-order compensation logic is
+│   tasks you write in that failure workflow. The orchestration/triggering
+│   is automatic; the undo logic is not generated for you.
+│   Reactive saga-starting needs NO new OpenDCB code: Conductor natively
+│   consumes AMQP as an event source, and outbox-relay-rabbitmq already
+│   publishes OpenDCB events to RabbitMQ — Conductor's own EventHandler (a
+│   JSON definition registered via its REST API, not Java code) subscribes
+│   to that same exchange directly. Direct analog of Axon 4's @StartSaga.
+│   What this module actually contains is the one piece of glue Axon's own
+│   association-property index gave us for free and Conductor doesn't:
+│   Conductor's complete_task action (used to resume a workflow paused on
+│   a WAIT task — the analog of @SagaEventHandler reacting to a later
+│   correlated event) requires the workflow's own internal ID to be known
+│   at the point of completion, with no automatic property-based lookup
+│   the way Axon's associationProperty had. saga_correlation
+│   (correlation_key, conductor_workflow_id, created_at) is that missing
+│   mapping — populated when start_workflow's response is captured,
+│   consulted whenever a later event needs to route a complete_task call
+│   to the right running instance. Same shape as every other small lookup
+│   table in this toolkit (scheduled_event, relay_position) — not a new
+│   engine, just the missing plumbing.
+│   Also contains a thin base for Conductor task workers (using
+│   Conductor's Java SDK, on Maven Central) that, when polled for work,
+│   dispatch an Axon command via CommandGateway — the same integration
+│   point opendcb-scheduling-core already uses to invoke Axon from outside
+│   its own command-handling path, and the reason this module — unlike
+│   opendcb-scheduling-core — genuinely needs a dependency on
+│   org.axonframework.
+│   Status: DONE. Implemented against Conductor's real, published Java SDK
+│   coordinates — `io.orkes.conductor:conductor-client:3.9.31-orkes`, NOT
+│   `com.netflix.conductor:conductor-client` — verified by resolving against
+│   Maven Central and cross-checking with `javap` against the resolved
+│   jar's real bytecode, since conductor-oss/java-sdk's GitHub HEAD (tag
+│   v6.0.0, internally versioned 5.1.0-SNAPSHOT) is ahead of what's
+│   actually published; 3.9.31-orkes is the latest version Central actually
+│   resolves. That version gap has one concrete consequence: no direct
+│   "complete task by workflowId + taskRefName" convenience method exists
+│   in 3.9.31-orkes (unlike GitHub HEAD), so `signalSaga` instead fetches
+│   the workflow via `WorkflowClient.getWorkflow` and looks up the task by
+│   reference name via `Workflow.getTaskByRefName` before calling
+│   `TaskClient.updateTask(TaskResult)` — the only update method the
+│   published API actually has.
+│   `saga_correlation` deviates from the literal spec in two documented
+│   ways: `conductor_workflow_id` is nullable, not `NOT NULL` — a reserving
+│   thread inserts its row with a null workflow ID first (an insert-and-let-
+│   the-database-reject race-breaker on a unique `correlation_key`,
+│   matching examples/microservices-sample's own idempotency pattern), only
+│   the winner actually calls Conductor's `startWorkflow`, then fills the ID
+│   in afterward — so any losing concurrent caller has something to poll
+│   for instead of getting no row at all; and the timestamp column is a
+│   portable `TIMESTAMP`, not `TIMESTAMPTZ`, matching outbox-relay-core's
+│   own JdbcRelayPositionStore precedent for staying plain ANSI SQL.
+│   SagaCorrelationStore (recordCorrelation/findWorkflowId/updateWorkflowId)
+│   and ConductorSagaBridge (startSagaIfNotAlreadyRunning/signalSaga) are
+│   both plain JDBC + the Conductor client — zero framework dependency.
+│   ConductorCommandTaskWorker implements Conductor's real `Worker`
+│   interface, deserializes a claimed task's input into a caller-supplied
+│   command type via Jackson, and dispatches it through `CommandGateway`
+│   (the one class in this module that touches org.axonframework).
+│   Tested against real infrastructure, no mocks: a real Conductor OSS
+│   server (`conductoross/conductor:next`, Postgres-backed persistence per
+│   its own `config-postgres.properties`) plus real PostgreSQL 16
+│   Testcontainers instances. `SagaCorrelationStoreTest` (4 tests) covers
+│   the JDBC layer alone. `ConductorSagaBridgeIntegrationTest` proves, with
+│   a real Conductor server: a `CountDownLatch`-gated true-concurrency race
+│   of two `startSagaIfNotAlreadyRunning` calls for the same correlation key
+│   results in exactly one Conductor workflow (both callers return the same
+│   workflow ID, and `getWorkflows` confirms only one exists); and an
+│   end-to-end `signalSaga` call genuinely completes a real WAIT task and
+│   progresses the workflow to COMPLETED. `ConductorCommandTaskWorkerTest`
+│   proves a real `TaskRunnerConfigurer` polling a real Conductor server
+│   hands a claimed task to the worker under test, which deserializes its
+│   input and dispatches it through a hand-rolled `StubCommandGateway` test
+│   double (`CommandGateway` has two abstract members — `send` and, via
+│   `DescribableComponent`, `describeTo` — so it isn't a functional
+│   interface and can't be a lambda), matching docs/TESTING.md's framework-
+│   adapter-test philosophy of isolating translation-layer bugs from a real
+│   CommandBus stack.
+│   Build/dependency issues found and fixed along the way, worth recording
+│   since at least one is a genuine Maven gotcha specific to this SDK:
+│   `conductor-client` declares `conductor-common` transitively at runtime
+│   scope only, so the com.netflix.conductor.common.* types this module's
+│   source references needed an explicit direct compile-scope dependency;
+│   and `conductor-common` itself directly depends on an old
+│   `jackson-core:2.13.2`, which was winning Maven's dependency-mediation
+│   tie-break over the newer 2.22.1 pulled transitively via
+│   jackson-databind (both at equal depth, and "nearest wins" falls back to
+│   declaration order on a tie) — this silently left a jackson-core too old
+│   to contain `StreamReadConstraints` (added in 2.15) on the runtime
+│   classpath, causing a `NoClassDefFoundError` inside the task worker at
+│   the exact moment it tried to deserialize a task's input, not at
+│   compile time. Fixed by adding an explicit direct dependency on
+│   `jackson-core:${jackson.version}`, which always wins depth-based
+│   mediation regardless of tie-breaking rules.
+│   Depends on: org.axonframework (axon-messaging, CommandGateway only),
+│   Conductor's Java SDK (io.orkes.conductor:conductor-client +
+│   conductor-common, 3.9.31-orkes), JDBC.
+│
 ├── opendcb-axon-spring-boot-routing/
 │   Wires Axon's own free JdbcTokenStore against whichever eventstore-*
 │   datasource is active, so PooledStreamingEventProcessor segments can be
@@ -534,10 +661,19 @@ events).
     DCB-native conflict-predicate safety net (`ConflictCriteria`,
     `SKIPPED_CONFLICT`, `ConflictSkipSink`) — are now DONE too (see the
     module's own status entry above).
-12. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
+12. ~~`opendcb-conductor-bridge`~~ — DONE. Saga/process-manager support via
+    Conductor OSS rather than a hand-built engine — see the module's own
+    entry above and docs/ARCHITECTURE.md's "opendcb-conductor-bridge"
+    section for the full rationale, including the honest server-dependency
+    trade-off this module accepts that every other module here has
+    deliberately avoided. Tested against a real Conductor OSS server plus
+    real PostgreSQL, including a true-concurrency race test for the
+    correlation table and an end-to-end task-worker test dispatching a real
+    Axon command.
+13. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
     `outbox-relay-webhook`, `bootstrap-axon-mysql`, `bootstrap-axon-mongo` —
     fill in once the pattern is validated once.
-13. `integrations/eventstore-<future-framework>` — only if/when a second
+14. `integrations/eventstore-<future-framework>` — only if/when a second
     framework actually becomes relevant. Not speculative work until then.
 
 ## Open questions worth deciding before writing more code

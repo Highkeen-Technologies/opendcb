@@ -141,6 +141,7 @@
         <module>outbox-relay-core</module>
         <module>outbox-relay-rabbitmq</module>
         <module>opendcb-scheduling-core</module>
+        <module>opendcb-conductor-bridge</module>
         <module>examples/plain-java-sample</module>
         <module>examples/microservices-sample/orders-service</module>
         <module>examples/microservices-sample/shipping-service</module>

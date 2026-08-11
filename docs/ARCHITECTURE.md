@@ -36,6 +36,10 @@ and keeps the framework-agnostic layer honestly agnostic.
                                               Axon-specific despite earlier drafts of this module,
                                               since firing a scheduled event is just appending via
                                               EventStoreStorage — no Axon dependency needed at all)
+5c. opendcb-conductor-bridge                 depends on: org.axonframework (CommandGateway only) +
+                                              Conductor's Java SDK + JDBC (own saga_correlation
+                                              table). Genuinely Axon-coupled, unlike scheduling-core
+                                              — see "opendcb-conductor-bridge" section below for why.
 6. outbox-relay-kafka                        depends on: outbox-relay-core
    outbox-relay-rabbitmq                     depends on: outbox-relay-core
    outbox-relay-webhook                      depends on: outbox-relay-core
@@ -193,6 +197,75 @@ equivalent capability specifically for teams on OpenDCB's self-hosted,
 no-Axon-Server stack — and, being framework-agnostic, works for any
 future `integrations/eventstore-<framework>` too, not just Axon.
 
+## opendcb-conductor-bridge: sagas via Conductor OSS, not a hand-built engine
+
+**Why not build our own saga engine, the way we built our own scheduling
+mechanism:** a saga/process-manager needs the same order of correctness
+rigor as everything else in this toolkit (crash recovery, exactly-once
+step execution, compensation) — but proving that rigor ourselves, to the
+standard every other module here has been held to, is materially more
+work than scheduling was. [Conductor OSS](https://github.com/conductor-oss/conductor)
+(Apache 2.0, actively maintained by Orkes + community, in production at
+Netflix/Tesla/LinkedIn/J.P. Morgan scale) already provides durable,
+replayable workflow execution with genuine saga/compensation support,
+verified directly against its source and docs rather than assumed:
+
+- **`postgres-persistence` is a first-class module** in Conductor's own
+  repo (real Flyway migrations, Testcontainers-backed tests) — fits
+  OpenDCB's self-hosted-Postgres philosophy without forcing Cassandra,
+  Elasticsearch, or Redis just to run it. Use a separate database (or at
+  minimum a separate schema) from `eventstore-postgres`'s own tables —
+  Conductor owns and migrates its own schema independently.
+- **Compensation is via a `failureWorkflow`**, not fully-automatic
+  per-task undo — worth being precise here since marketing copy can
+  overstate this: Conductor triggers your designated failure workflow on
+  main-workflow failure, and passes it structured context (`reason`,
+  `workflowId`, `failureTaskId`, the full failed workflow's execution
+  JSON) — but you still write the actual reverse-order compensation logic
+  yourself, as tasks in that failure workflow. The orchestration/triggering
+  is automatic; the undo logic is not generated for you.
+
+**Honest trade-off, stated plainly:** Conductor runs as its own server —
+same category of thing as Axon Server — a genuine departure from every
+other module in this toolkit, which has deliberately avoided requiring
+any extra service beyond Postgres + your own JVM. Unlike Axon Server,
+there's no paid-tier tension (Conductor is free at every level), so the
+cost here is purely operational (one more thing to run), not licensing.
+
+### How this integrates — reusing what's already built, not a new engine
+
+**Starting a saga reactively** needs no new OpenDCB code at all. Conductor
+natively supports AMQP as an event source, and `outbox-relay-rabbitmq`
+already publishes OpenDCB events to RabbitMQ — Conductor's own
+`EventHandler` (registered via its REST API, a JSON definition, not
+Java code) can consume from that same exchange directly and auto-start a
+workflow when a matching event arrives. This is the direct analog of
+Axon 4's `@StartSaga`.
+
+**Reacting to a later correlated event** — the analog of Axon 4's
+`@SagaEventHandler(associationProperty = ...)` — works differently in
+Conductor and needs one small piece of glue we don't get for free.
+Axon maintained its own internal index (event property value → saga
+instance). Conductor's `complete_task` action (used to resume a workflow
+paused on a `WAIT` task) requires the **workflow's own internal ID** to be
+known at the point of completion — it has no equivalent automatic
+property-based lookup. `opendcb-conductor-bridge` owns exactly this
+missing piece: a `saga_correlation(correlation_key, conductor_workflow_id,
+created_at)` table, populated when `start_workflow`'s response is
+captured, consulted whenever a later event needs to route a
+`complete_task` call to the right running instance. Same shape as every
+other small lookup table in this toolkit (`scheduled_event`,
+`relay_position`) — not a new engine, just the missing mapping.
+
+**A saga step actually doing something in our domain** — the analog of a
+`@SagaEventHandler` method dispatching a command — is a Conductor task
+worker (using Conductor's Java SDK, on Maven Central) that, when polled
+for work, dispatches an Axon command via `CommandGateway`. This is the
+same integration point `opendcb-scheduling-core` already uses to invoke
+Axon from outside its own command-handling path, and it's the reason this
+module — unlike `opendcb-scheduling-core` — genuinely needs a dependency
+on `org.axonframework`.
+
 ## Bootstrap modules: zero-boilerplate wiring without requiring Spring
 
 `integrations/eventstore-axon` deliberately never depends on a specific
@@ -266,6 +339,7 @@ first, `-spring-boot-...` is the suffix.
 | `opendcb-axon-spring-boot-routing` | `com.highkeen.opendcb.routing.axon.springboot` |
 | `outbox-relay-core` | `com.highkeen.opendcb.relay.core` |
 | `opendcb-scheduling-core` | `com.highkeen.opendcb.scheduling.core` |
+| `opendcb-conductor-bridge` | `com.highkeen.opendcb.conductor.bridge` |
 | `outbox-relay-kafka` | `com.highkeen.opendcb.relay.kafka` |
 | `outbox-relay-rabbitmq` | `com.highkeen.opendcb.relay.rabbitmq` |
 | `outbox-relay-webhook` | `com.highkeen.opendcb.relay.webhook` |

@@ -1,5 +1,14 @@
 # Adding a new storage provider
 
+This doc is scoped to storage providers specifically: a module that
+implements `com.highkeen.opendcb.eventstore.core.EventStoreStorage`
+(`eventstore-postgres`, and eventually `eventstore-mysql`/`eventstore-mongo`).
+`opendcb-scheduling-core` and `opendcb-conductor-bridge` are not providers
+in this sense — neither implements `EventStoreStorage` (scheduling-core
+consumes it as a client via `appendAtomically`; conductor-bridge doesn't
+touch it at all) — so nothing here applies to them. See @docs/ARCHITECTURE.md
+for where each of those actually lives in the module dependency order.
+
 Use `eventstore-postgres`'s `PostgresEventStoreStorage`
 (`com.highkeen.opendcb.eventstore.postgres`) as the reference implementation
 — every new provider follows the same shape.

@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright the OpenDCB contributors
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.highkeen.opendcb</groupId>
+        <artifactId>opendcb</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>opendcb-conductor-bridge</artifactId>
+    <!-- Axon-tied version line: this module depends on org.axonframework (CommandGateway only),
+         so it versions alongside the other Axon-coupled modules; see the root pom.xml's
+         opendcb-axon.version property comment. -->
+    <version>${opendcb-axon.version}</version>
+    <packaging>jar</packaging>
+
+    <name>OpenDCB :: Conductor Bridge</name>
+    <description>
+        Saga/process-manager glue between OpenDCB/Axon and Conductor OSS
+        (github.com/conductor-oss/conductor), not a hand-built saga engine. Owns
+        exactly one lookup table (saga_correlation) mapping a domain correlation
+        key to a running Conductor workflow instance ID -- the one piece of
+        automatic association-property indexing Axon's own saga support provided
+        for free that Conductor's complete_task-by-workflow-id API does not.
+    </description>
+    <url>https://github.com/Highkeen-Technologies/opendcb</url>
+
+    <scm>
+        <connection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</connection>
+        <developerConnection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</developerConnection>
+        <url>https://github.com/Highkeen-Technologies/opendcb</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <!--
+          Deliberately NOT overriding maven.deploy.skip (stays true, inherited from the root
+          pom.xml): docs/ROADMAP.md's "Publishing target" section enumerates exactly 9 publishable
+          modules and this is not one of them yet. Revisit alongside adding the Maven Central
+          publishing plugin stub (matching integrations/eventstore-axon's pattern) once this module
+          is ready to publish.
+        -->
+        <conductor-client.version>3.9.31-orkes</conductor-client.version>
+        <postgresql.version>42.7.4</postgresql.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.axonframework</groupId>
+            <artifactId>axon-messaging</artifactId>
+        </dependency>
+        <dependency>
+            <!--
+              io.orkes.conductor:conductor-client, NOT com.netflix.conductor:conductor-client.
+              Verified by actually resolving coordinates against Maven Central (search.maven.org)
+              and cross-checking with javap against the resolved jar's real bytecode, since
+              conductor-oss/java-sdk's GitHub HEAD (tag v6.0.0, internally versioned
+              5.1.0-SNAPSHOT, group io.orkes.conductor) is ahead of what's actually published:
+              3.9.31-orkes is the latest version Central actually resolves. The two API surfaces
+              differ; see ConductorSagaBridge's class Javadoc for the concrete consequence
+              (no direct "complete task by workflowId + taskRefName" convenience method exists in
+              3.9.31-orkes; signalSaga instead fetches the workflow and looks up the task by its
+              reference name).
+            -->
+            <groupId>io.orkes.conductor</groupId>
+            <artifactId>conductor-client</artifactId>
+            <version>${conductor-client.version}</version>
+        </dependency>
+        <dependency>
+            <!--
+              conductor-client declares this transitively at runtime scope only (confirmed via
+              mvn dependency:tree), so the Task/TaskResult/Workflow/WorkflowDef/StartWorkflowRequest
+              types this module's own source references (com.netflix.conductor.common.*) are not
+              on the compile classpath without pulling it in explicitly here, at the default
+              (compile) scope.
+            -->
+            <groupId>io.orkes.conductor</groupId>
+            <artifactId>conductor-common</artifactId>
+            <version>${conductor-client.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <dependency>
+            <!--
+              Forced explicit, matching jackson-databind's own version. Without this,
+              io.orkes.conductor:conductor-common's own direct (and much older) jackson-core:2.13.2
+              dependency wins Maven's dependency-mediation tie-break (same depth as the jackson-core
+              pulled in transitively via jackson-databind above, and "nearest wins" falls back to
+              declaration order on a tie), leaving a jackson-core on the runtime classpath too old to
+              contain StreamReadConstraints (added in 2.15). Confirmed the hard way, via a real
+              java.lang.NoClassDefFoundError from a Conductor task worker at runtime, not assumed.
+            -->
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
