@@ -1,0 +1,77 @@
+site_name: OpenDCB
+site_description: DCB-capable event storage and event routing for event-sourcing frameworks, starting with Axon Framework 5.
+site_url: https://Highkeen-Technologies.github.io/opendcb/
+repo_name: Highkeen-Technologies/opendcb
+repo_url: https://github.com/Highkeen-Technologies/opendcb
+edit_uri: edit/main/docs-site/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Prerequisites: getting-started/prerequisites.md
+      - Spring Boot Quickstart: getting-started/spring-boot-quickstart.md
+      - Plain Java Quickstart: getting-started/plain-java-quickstart.md
+  - Core Concepts:
+      - Event Sourcing in Plain English: core-concepts/event-sourcing-in-plain-english.md
+      - What is DCB: core-concepts/what-is-dcb.md
+      - How the Pieces Fit Together: core-concepts/how-the-pieces-fit-together.md
+  - Setup & Installation:
+      - Spring Boot Setup: setup/spring-boot-setup.md
+      - Plain Java Setup: setup/plain-java-setup.md
+      - Choosing a Storage Provider: setup/choosing-a-storage-provider.md
+      - Database Setup: setup/database-setup.md
+  - Module Guides:
+      - Storage (eventstore-core and eventstore-postgres): module-guides/storage.md
+      - Axon Integration: module-guides/axon-integration.md
+      - Spring Boot Starter and Scaling: module-guides/spring-boot-starter-and-scaling.md
+      - Scheduling Events: module-guides/scheduling-events.md
+      - Sagas with Conductor: module-guides/sagas-with-conductor.md
+      - Event Routing and Microservices: module-guides/event-routing-and-microservices.md
+  - Tutorials:
+      - Build Your First Event-Sourced Entity: tutorials/build-your-first-event-sourced-entity.md
+      - Scale Across Multiple Instances: tutorials/scale-across-multiple-instances.md
+      - Build a Two-Service System: tutorials/build-a-two-service-system.md
+      - Schedule a Future Event: tutorials/schedule-a-future-event.md
+      - Build a Saga: tutorials/build-a-saga.md
+  - Examples: examples.md
+  - Reference:
+      - Configuration Properties: reference/configuration-properties.md
+      - Module and Package Reference: reference/module-and-package-reference.md
+      - Glossary: reference/glossary.md
+  - FAQ and Troubleshooting: faq-and-troubleshooting.md
+  - Contributing: contributing.md
