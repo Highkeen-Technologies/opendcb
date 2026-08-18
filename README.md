@@ -42,6 +42,9 @@ License: [Apache 2.0](LICENSE), matching Axon Framework itself.
 | `outbox-relay-rabbitmq` | RabbitMQ publisher for `outbox-relay-core` | Done |
 | `outbox-relay-kafka` | Kafka publisher | Not started |
 | `outbox-relay-webhook` | HTTP webhook publisher | Not started |
+| `opendcb-data-protection` | Crypto-shredding for erasure compliance (GDPR/DPDP/RBI/PCI-DSS) | Done |
+| `opendcb-data-protection-vault` | `MasterKeyProvider` backed by HashiCorp Vault's Transit engine | Done |
+| `opendcb-data-protection-aws-kms` | `MasterKeyProvider` backed by AWS KMS | Implemented and verified (real Testcontainers-backed LocalStack KMS) |
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full module skeleton,
 detailed status, and design history, and

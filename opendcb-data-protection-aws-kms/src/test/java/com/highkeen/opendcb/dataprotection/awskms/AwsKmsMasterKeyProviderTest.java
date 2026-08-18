@@ -17,7 +17,6 @@ package com.highkeen.opendcb.dataprotection.awskms;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.testcontainers.containers.localstack.LocalStackContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -28,10 +27,12 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.kms.KmsClient;
 import software.amazon.awssdk.services.kms.model.CreateKeyResponse;
 
+import java.net.URI;
 import java.security.SecureRandom;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.testcontainers.containers.localstack.LocalStackContainer.Service.KMS;
 
 /**
@@ -39,26 +40,28 @@ import static org.testcontainers.containers.localstack.LocalStackContainer.Servi
  * KMS enabled -- no mocking of the AWS SDK client, matching this project's
  * no-mocking-on-correctness-critical-paths standard.
  *
- * <p><b>Why this whole class is conditionally skipped, not unconditionally run:</b> since March 2026,
- * LocalStack's unified Docker image requires a LocalStack account and a
- * {@code LOCALSTACK_AUTH_TOKEN} even for free/non-commercial use (its GitHub repo predating this
- * change is now archived/frozen) -- this is the first test suite in this repo with an external-account
- * dependency, a deliberate, discussed trade-off (see {@code docs/ROADMAP.md}), not an oversight. KMS's
- * symmetric Encrypt/Decrypt operations (this provider's only use case) are fully emulated even on
- * LocalStack's free "Hobby" tier; the known emulation gaps (asymmetric keys, custom key material,
- * plaintext-size validation) don't affect this module. This class is skipped, not failed, when no
- * token is configured in the environment/CI secrets -- honest "not exercised here" rather than a
- * false pass from a stub.
+ * <p><b>Why this runs unconditionally against community LocalStack, with no auth token:</b> LocalStack's
+ * {@code localstack/localstack:latest} tag started requiring a {@code LOCALSTACK_AUTH_TOKEN} on
+ * 2026-03-23, but that requirement is tied to the image tag, not to KMS itself -- it does not apply
+ * retroactively to older pinned tags. This module pins {@code localstack/localstack:4.9}
+ * (LocalStack 4.9.2, built 2025-10-06, predating the 2026-03-23 cutover by five months), and that
+ * pinned image was verified directly (a manual {@code docker run} + {@code aws --endpoint-url}
+ * {@code kms create-key}/{@code encrypt}/{@code decrypt} round trip, with zero
+ * {@code LOCALSTACK_AUTH_TOKEN} and zero account) to start and serve KMS with no token at all -- the
+ * account-requirement gate this test previously carried was based on an unverified assumption about
+ * the unified image in general, not on anything actually tested against the specific pinned tag this
+ * class uses. Community/free-tier LocalStack has always emulated KMS's symmetric CreateKey/Encrypt/
+ * Decrypt operations (this provider's only use case); the known emulation gaps (asymmetric keys,
+ * custom key material, plaintext-size validation) don't affect this module. No special environment
+ * setup is required to run this test, matching every other Testcontainers-backed suite in this repo.
  */
 @Testcontainers
-@EnabledIfEnvironmentVariable(named = "LOCALSTACK_AUTH_TOKEN", matches = ".+")
 class AwsKmsMasterKeyProviderTest {
 
     @Container
     static final LocalStackContainer LOCALSTACK = new LocalStackContainer(
                     DockerImageName.parse("localstack/localstack:4.9"))
-            .withServices(KMS)
-            .withEnv("LOCALSTACK_AUTH_TOKEN", System.getenv("LOCALSTACK_AUTH_TOKEN"));
+            .withServices(KMS);
 
     private static KmsClient kmsClient;
     private static String keyId;
@@ -104,6 +107,28 @@ class AwsKmsMasterKeyProviderTest {
         AwsKmsMasterKeyProvider provider = provider();
 
         assertThrows(IllegalStateException.class, () -> provider.unwrapKey(randomKey()));
+    }
+
+    @Test
+    void wrapKeyFailsClearlyWhenKmsIsUnreachable() {
+        // Unlike VaultMasterKeyProvider, this class's constructor never connects eagerly -- it just
+        // stores an already-configured KmsClient (see the class Javadoc). So the equivalent of
+        // Vault's "constructor fails fast when unreachable" test has to trigger the failure on first
+        // real call instead: a KmsClient pointed at a port nothing is listening on.
+        KmsClient unreachableClient = KmsClient.builder()
+                .endpointOverride(URI.create("http://127.0.0.1:1"))
+                .region(Region.of(LOCALSTACK.getRegion()))
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey())))
+                .build();
+        AwsKmsMasterKeyProvider provider = new AwsKmsMasterKeyProvider(unreachableClient, keyId);
+
+        IllegalStateException e = assertThrows(
+                IllegalStateException.class, () -> provider.wrapKey(randomKey()));
+
+        assertTrue(
+                e.getMessage().contains("AWS KMS Encrypt failed"),
+                "Expected a clear unreachable-KMS message, got: " + e.getMessage());
     }
 
     private static byte[] randomKey() {

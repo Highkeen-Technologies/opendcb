@@ -441,14 +441,7 @@ opendcb/
 │   were a documentation error, corrected alongside the implementation).
 │   Managed, has a Mumbai (ap-south-1) region for RBI-style data
 │   localization without cross-border key material transfer.
-│   Status: IMPLEMENTED, COMPILES, gated real-backend tests exist — but NOT
-│   YET VERIFIED against a real AWS KMS (or KMS-emulating) backend in any
-│   session to date. These are two different claims and this entry
-│   deliberately does not collapse them into a single unqualified DONE:
-│   "implemented + compiles + a real-backend test suite exists" (true,
-│   below) is not the same claim as "that suite has actually been run
-│   against KMS and passed" (not true yet — see below for exactly what's
-│   missing and why). Implemented against AWS SDK v2
+│   Status: DONE, including real verification. Implemented against AWS SDK v2
 │   (software.amazon.awssdk:kms:2.53.1, confirmed current via Central's own
 │   maven-metadata.xml), grounded via javap against the real jar rather than
 │   assumed: KmsClient.encrypt(EncryptRequest)/.decrypt(DecryptRequest); the
@@ -459,43 +452,37 @@ opendcb/
 │   SdkException (confirmed via javap against sdk-core/aws-core), so a
 │   single catch clause is sufficient and exhaustive for the
 │   fail-fast-and-clearly requirement.
-│   AwsKmsMasterKeyProviderTest is written for real Testcontainers coverage
-│   against LocalStack (localstack/localstack:4.9) with KMS enabled — round
-│   trip, a clear failure when the configured CMK doesn't exist, a clear
-│   failure on garbage ciphertext — but is annotated
-│   @EnabledIfEnvironmentVariable(named = "LOCALSTACK_AUTH_TOKEN", matches =
-│   ".+") rather than run unconditionally: since March 2026, LocalStack's
-│   unified image requires a LocalStack account + auth token even for
-│   free/non-commercial use. This is the first test suite in this repo with
-│   an external-account dependency — a deliberate, discussed trade-off
-│   (LocalStack + auth token, accepted over a real paid AWS KMS key or
-│   shipping untested), not an oversight. KMS's symmetric Encrypt/Decrypt
-│   (this provider's only use case) is fully emulated on LocalStack's free
-│   Hobby tier. Without LOCALSTACK_AUTH_TOKEN configured in the environment
-│   or CI secrets, the suite is honestly skipped, not falsely passed or
-│   failed.
-│
-│   What "genuinely exercising it" actually requires, stated explicitly so
-│   this doesn't get silently upgraded to DONE later without it actually
-│   happening: either (a) a LocalStack account's LOCALSTACK_AUTH_TOKEN
-│   (a free-tier account is sufficient for KMS's Hobby-tier-emulated
-│   Encrypt/Decrypt — this is not a paid-tier requirement, only an
-│   account-and-token requirement introduced by LocalStack's March 2026
-│   unified image), provisioned as an environment variable/CI secret the
-│   same way CENTRAL_USERNAME/CENTRAL_PASSWORD/GPG_PASSPHRASE already are;
-│   or (b) a real AWS account with a throwaway KMS CMK (cheap — KMS is
-│   priced per-key-per-month plus per-request, a single test CMK cleaned up
-│   after the run costs cents), swapping the test's LocalStack container for
-│   a real region-scoped KmsClient. As of this entry, NEITHER (a) NOR (b)
-│   has been provisioned or run in any coding session to date — the grounding
-│   done so far (javap against the real SDK jar's method signatures,
-│   confirming KmsClient.encrypt/.decrypt exist with the expected shapes and
-│   that SdkException is the sole necessary catch target) establishes that
-│   the code is written against the real API surface, not that it has been
-│   exercised end-to-end against a real or emulated KMS backend and produced
-│   a passing round trip. Treat this module as implementation-complete but
-│   integration-unverified until one of (a)/(b) happens and
-│   AwsKmsMasterKeyProviderTest is confirmed actually running (not skipped).
+│   AwsKmsMasterKeyProviderTest runs unconditionally against a real
+│   Testcontainers-backed LocalStack (localstack/localstack:4.9) with KMS
+│   enabled: a genuine CreateKey/Encrypt/Decrypt round trip, a clear failure
+│   when the configured CMK doesn't exist, and a clear failure on garbage
+│   ciphertext. An earlier @EnabledIfEnvironmentVariable(named =
+│   "LOCALSTACK_AUTH_TOKEN", matches = ".+") gate was removed after this was
+│   directly re-investigated and empirically checked, not re-asserted: the
+│   gate's premise (that LocalStack's unified image, since March 2026,
+│   requires an account + auth token even for free/non-commercial use) is
+│   correct for localstack/localstack:latest and newer releases going
+│   forward, but does NOT apply retroactively to already-pinned older tags —
+│   and localstack/localstack:4.9 (LocalStack 4.9.2, built 2025-10-06) is
+│   one such tag, five months older than the 2026-03-23 cutover. Verified
+│   two independent ways: (1) a manual `docker run` of that exact pinned
+│   image plus `aws --endpoint-url kms create-key`/`encrypt`/`decrypt` calls
+│   against it, with zero LOCALSTACK_AUTH_TOKEN and zero account, succeeded;
+│   (2) the real AwsKmsMasterKeyProviderTest suite itself, run via
+│   `mvn -pl opendcb-data-protection-aws-kms test
+│   -Dtest=AwsKmsMasterKeyProviderTest` with LOCALSTACK_AUTH_TOKEN confirmed
+│   unset in the environment, produced `Tests run: 3, Failures: 0, Errors:
+│   0, Skipped: 0` / BUILD SUCCESS — not merely compiling or being gated
+│   skippable, but actually executing and passing. The
+│   `.withEnv("LOCALSTACK_AUTH_TOKEN", ...)` call that previously injected
+│   that (frequently unset, so effectively "null") env var into the
+│   container was also removed as a latent bug alongside the gate. Community/
+│   free-tier LocalStack has always fully emulated KMS's symmetric
+│   CreateKey/Encrypt/Decrypt operations — this provider's only use case;
+│   known emulation gaps (asymmetric keys, custom key material, plaintext-
+│   size validation) don't affect it. No LocalStack account, auth token, or
+│   real AWS account is required to run this suite — same as every other
+│   Testcontainers-backed suite in this repo.
 │   Depends on: opendcb-data-protection, AWS SDK for KMS
 │   (software.amazon.awssdk:kms).
 │
@@ -817,13 +804,13 @@ events).
     MasterKeyProvider interface + an env-var-based implementation first.
 14. ~~`opendcb-data-protection-vault`~~ — DONE, including real verification
     (real HashiCorp Vault Testcontainers coverage, actually run and
-    passing). `opendcb-data-protection-aws-kms` — IMPLEMENTED and COMPILES,
-    NOT YET DONE in the same sense: its gated real-backend test suite has
-    never actually been run against AWS KMS or LocalStack in any session —
-    doing so needs either a LocalStack account token or a real, throwaway
-    AWS KMS key — see the module's own entry above for exactly what's
-    missing. Do not read this list entry's mention of both modules together
-    as implying they've reached the same level of verification. Real
+    passing). ~~`opendcb-data-protection-aws-kms`~~ — DONE too, including
+    real verification: its real-backend test suite runs unconditionally
+    against a Testcontainers-backed LocalStack (localstack/localstack:4.9,
+    pre-dating LocalStack's 2026-03-23 unified-image auth-token
+    requirement) and actually passes (3/3 tests) — no LocalStack account
+    token or real AWS account needed; see the module's own entry above for
+    the full verification detail. Real
     KMS-backed MasterKeyProvider implementations, built immediately after
     opendcb-data-protection itself rather than deferred, per an explicit
     decision to support both a self-hosted (Vault) and a managed-cloud (AWS
@@ -842,20 +829,22 @@ events).
 - **Publishing target:** RESOLVED — GitHub under the Highkeen-Technologies
   org (already done; see the repo's own remote) + Maven Central, via the
   current (2025+) Central Publisher Portal, not the old OSSRH/Nexus staging
-  workflow (shut down 2025-06-30). POM preparation for the 10 publishable
+  workflow (shut down 2025-06-30). POM preparation for the 13 publishable
   modules (`eventstore-core`, `eventstore-postgres`,
   `integrations/eventstore-axon`, `bootstrap-axon-postgres`,
   `opendcb-axon-spring-boot-starter`, `opendcb-axon-spring-boot-routing`,
   `outbox-relay-core`, `outbox-relay-rabbitmq`, `opendcb-scheduling-core`,
-  `opendcb-conductor-bridge` — `examples/*` deliberately excluded, since
-  those aren't meant to be depended on externally) is DONE: `<name>`,
-  `<description>`, `<url>`, `<scm>` on every one of the 10 (verified against Maven's own inheritance
+  `opendcb-conductor-bridge`, `opendcb-data-protection`,
+  `opendcb-data-protection-vault`, `opendcb-data-protection-aws-kms` —
+  `examples/*` deliberately excluded, since those aren't meant to be
+  depended on externally) is DONE: `<name>`,
+  `<description>`, `<url>`, `<scm>` on every one of the 13 (verified against Maven's own inheritance
   rules that `<licenses>`/`<developers>`/`<description>` inherit as-is from
   the root `pom.xml` so they're declared there once, while `<name>` never
   inherits and `<url>`/`<scm>` inherit but with the child's artifactId
   auto-appended to the parent's value — which would corrupt this mono-repo's
   single GitHub/git URLs — so those three are repeated explicitly, and
-  identically, in each of the 10 modules instead of relying on inheritance);
+  identically, in each of the 13 modules instead of relying on inheritance);
   `maven-source-plugin` (3.4.0, the latest stable — not the `4.0.0-beta-1`
   Maven Central currently lists as `<release>`) and `maven-javadoc-plugin`
   (3.12.0) wired to attach `-sources.jar`/`-javadoc.jar`;
@@ -871,7 +860,7 @@ events).
   (`MAVEN_GPG_PASSPHRASE`) mechanisms instead of its deprecated
   `passphrase`/`passphraseServerId` parameters. All four plugins are
   declared once in the root `pom.xml`'s `pluginManagement` and opted into
-  per-module via a minimal `<build><plugins>` stub in each of the 10 — so
+  per-module via a minimal `<build><plugins>` stub in each of the 13 — so
   `examples/*` never triggers them, without needing an explicit `<skip>` on
   each example module. `maven-deploy-plugin`'s own default `deploy` binding
   is separate from all four of the above, though: it runs for every module
@@ -881,6 +870,34 @@ events).
   Maven Central currently lists as `<release>`/`<latest>`) directly in its
   own `<build><plugins>` with `<skip>true</skip>`, so `mvn deploy`/`mvn
   clean deploy` never attempts to publish them.
+
+  **`opendcb-data-protection`, `opendcb-data-protection-vault`, and
+  `opendcb-data-protection-aws-kms` wired in after the fact** (this
+  Publishing-target write-up originally covered 10 modules, before these
+  three existed): version-group placement was determined by
+  `mvn dependency:tree` on each module, not assumed — `opendcb-data-protection`
+  resolves `org.axonframework:axon-messaging` as a **direct** dependency
+  (its `OpenDcbEncryptingConverter` implements Axon's real `Converter` SPI),
+  so it versions under `opendcb-axon.version`, the same group as
+  `opendcb-conductor-bridge`. `opendcb-data-protection-vault` and
+  `opendcb-data-protection-aws-kms` each resolve `axon-messaging` only as a
+  **transitive** dependency, pulled in solely through their own dependency
+  on `opendcb-data-protection` — `mvn dependency:tree`'s indentation shows
+  it nested under that dependency, never at the module's own top level —
+  confirming neither has any direct `org.axonframework` import of its own
+  (`VaultMasterKeyProvider`/`AwsKmsMasterKeyProvider` implement only
+  `com.highkeen.opendcb.dataprotection.MasterKeyProvider`, whose two-method
+  signature is plain `byte[]`, no framework type anywhere). Depending on an
+  Axon-tied module doesn't itself make a module Axon-tied — the same
+  relationship `eventstore-postgres` has to `eventstore-core` — so both
+  version under `opendcb.version` instead, each declaring an explicit
+  `${opendcb-axon.version}` reference on their own `opendcb-data-protection`
+  dependency (a version-boundary crossing, same pattern
+  `opendcb-data-protection-vault`'s own pom.xml comment documents). All
+  three already carried the full source/javadoc/GPG/central-publishing/
+  flatten-maven-plugin stub plus `maven.deploy.skip=false` when this was
+  verified — no plugin wiring was missing, only this document's own module
+  count and list were stale.
 
   **Bug found by the first real `workflow_dispatch` run (2026-07-30), fixed
   same day:** that per-module `<skip>true</skip>` stub was only ever added to
@@ -975,9 +992,15 @@ events).
   Root aggregator `pom.xml` defines two properties: `opendcb.version` for the
   framework-agnostic group (`eventstore-core`, `eventstore-postgres`/`-mysql`/
   `-mongo`, `outbox-relay-core`/`-kafka`/`-rabbitmq`/`-webhook`,
-  `opendcb-scheduling-core`), and `opendcb-axon.version` for the Axon-tied
-  group (`integrations/eventstore-axon`, `bootstrap-axon-postgres`,
-  `opendcb-axon-spring-boot-starter`, `opendcb-axon-spring-boot-routing`).
+  `opendcb-scheduling-core`, `opendcb-data-protection-vault`,
+  `opendcb-data-protection-aws-kms` — the latter two despite depending on the
+  Axon-tied `opendcb-data-protection`, since neither has a direct
+  `org.axonframework` dependency of its own, confirmed via
+  `mvn dependency:tree`; see the "Publishing target" entry above), and
+  `opendcb-axon.version` for the Axon-tied group (`integrations/eventstore-axon`,
+  `bootstrap-axon-postgres`, `opendcb-axon-spring-boot-starter`,
+  `opendcb-axon-spring-boot-routing`, `opendcb-conductor-bridge`,
+  `opendcb-data-protection`).
   Each member of a group declares its own explicit `<version>` (e.g.
   `<version>${opendcb.version}</version>`), overriding the version it would
   otherwise inherit from the parent — Maven only inherits a child's

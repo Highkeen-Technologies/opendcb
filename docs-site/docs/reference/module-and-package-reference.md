@@ -20,6 +20,9 @@ its current status. Mirrors `README.md`'s module table and
 | `outbox-relay-rabbitmq` | `com.highkeen.opendcb.relay.rabbitmq` | RabbitMQ publisher for `outbox-relay-core` | Done |
 | `outbox-relay-kafka` | `com.highkeen.opendcb.relay.kafka` | Kafka publisher | Not started |
 | `outbox-relay-webhook` | `com.highkeen.opendcb.relay.webhook` | HTTP webhook publisher | Not started |
+| `opendcb-data-protection` | `com.highkeen.opendcb.dataprotection` | Crypto-shredding for erasure compliance: `@DataSubjectId`/`@PersonalData`, `OpenDcbEncryptingConverter`, `OpenDcbKeyStore` | Done |
+| `opendcb-data-protection-vault` | `com.highkeen.opendcb.dataprotection.vault` | `MasterKeyProvider` backed by HashiCorp Vault's Transit secrets engine | Done |
+| `opendcb-data-protection-aws-kms` | `com.highkeen.opendcb.dataprotection.awskms` | `MasterKeyProvider` backed by AWS KMS | Implemented and verified (real Testcontainers-backed LocalStack KMS) |
 
 `examples/*` (`plain-java-sample`, `microservices-sample`) are runnable
 demonstrations, not published libraries — they have no stable package
