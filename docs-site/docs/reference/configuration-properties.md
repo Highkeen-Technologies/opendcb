@@ -32,8 +32,27 @@ This is the only property this module defines. It resolves its
 (built by the starter above), falling back to your application's primary
 `DataSource` with a logged `INFO` message if that bean isn't found.
 
+## Data protection: not Spring Boot properties
+
+`opendcb-data-protection`, `opendcb-data-protection-vault`, and
+`opendcb-data-protection-aws-kms` have no `opendcb.*` Spring Boot
+auto-configuration — none of the three ships a `@ConfigurationProperties`
+class. Every `MasterKeyProvider` is configured via plain constructor
+arguments instead:
+
+| Class | Configuration | Default |
+|---|---|---|
+| `EnvVarMasterKeyProvider` (`opendcb-data-protection`) | Reads a base64-encoded 256-bit AES key from an environment variable — the *name* is a constructor argument (`new EnvVarMasterKeyProvider("MY_VAR")`), not itself a Spring property. | `OPENDCB_DATA_PROTECTION_MASTER_KEY`, if the no-arg constructor is used |
+| `VaultMasterKeyProvider` (`opendcb-data-protection-vault`) | Constructor takes Vault base URL, Vault token, and Transit key name — all three are plain `String` arguments, no defaults. | *(none — all three required)* |
+| `AwsKmsMasterKeyProvider` (`opendcb-data-protection-aws-kms`) | Constructor takes an already-configured `KmsClient` and a CMK key ID/ARN — this class never builds its own client, so region/credentials/endpoint are entirely the caller's own AWS SDK configuration, outside OpenDCB's config surface. | *(none)* |
+
+See
+[Data Protection and Key Management](../module-guides/data-protection-and-key-management.md)
+for real, working construction examples of all three.
+
 ## What's next
 
 See [Spring Boot Setup](../setup/spring-boot-setup.md) and
 [Spring Boot Starter and Scaling](../module-guides/spring-boot-starter-and-scaling.md)
-for how these properties are actually used.
+for how the `opendcb.eventstore.*`/`opendcb.routing.*` properties above are
+actually used.

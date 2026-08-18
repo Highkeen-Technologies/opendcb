@@ -76,7 +76,7 @@ deny `create` on `transit/keys/*`, allowing only `update` on
 `transit/encrypt/<your-key>` and `transit/decrypt/<your-key>`. With that
 policy in place, a wrong key name fails immediately on the first `wrapKey`
 call instead of silently creating an unintended key. See
-[Data Protection and Key Management](module-guides/data-protection-and-key-management.md#security-consideration-vault-auto-creates-a-missing-transit-key-on-encrypt)
+[Data Protection and Key Management](module-guides/data-protection-and-key-management.md#vault)
 for the full explanation and the exact policy HCL.
 
 ## What's next

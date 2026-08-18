@@ -73,6 +73,7 @@ nav:
       - Build a Two-Service System: tutorials/build-a-two-service-system.md
       - Schedule a Future Event: tutorials/schedule-a-future-event.md
       - Build a Saga: tutorials/build-a-saga.md
+      - Protect and Erase Personal Data: tutorials/protect-and-erase-personal-data.md
   - Examples: examples.md
   - Reference:
       - Configuration Properties: reference/configuration-properties.md
