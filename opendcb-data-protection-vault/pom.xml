@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright the OpenDCB contributors
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.highkeen.opendcb</groupId>
+        <artifactId>opendcb</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>opendcb-data-protection-vault</artifactId>
+    <!-- Framework-agnostic version line, deliberately NOT opendcb-axon.version: VaultMasterKeyProvider
+         implements only com.highkeen.opendcb.dataprotection.MasterKeyProvider (two plain byte[]
+         methods, zero org.axonframework import anywhere in that interface or in this module's own
+         code) plus HashiCorp Vault's Java client. Its dependency on opendcb-data-protection (an
+         Axon-tied module, per that module's own version-line comment) is expressed as an explicit,
+         version-boundary-crossing reference to ${opendcb-axon.version} below — this module's own
+         release cadence tracks Vault client changes and this project's own fixes, not Axon's, so it
+         belongs in the opendcb.version group, the same category opendcb-scheduling-core is in for the
+         identical reason (zero framework coupling in the module's own code). -->
+    <version>${opendcb.version}</version>
+    <packaging>jar</packaging>
+
+    <name>OpenDCB :: Data Protection :: Vault</name>
+    <description>
+        MasterKeyProvider implementation for opendcb-data-protection backed by HashiCorp Vault's
+        Transit secrets engine (wrap/unwrap via Transit's encrypt/decrypt endpoints). Self-hosted,
+        no cloud vendor dependency — philosophically consistent with eventstore-postgres over Axon
+        Server. Depends only on opendcb-data-protection's MasterKeyProvider interface and Vault's
+        Java client; changes nothing in opendcb-data-protection itself.
+    </description>
+    <url>https://github.com/Highkeen-Technologies/opendcb</url>
+
+    <scm>
+        <connection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</connection>
+        <developerConnection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</developerConnection>
+        <url>https://github.com/Highkeen-Technologies/opendcb</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <!-- Overrides the root pom.xml's maven.deploy.skip=true default: this is one of the
+             publishable modules, so its deploy goal must actually run. -->
+        <maven.deploy.skip>false</maven.deploy.skip>
+        <!--
+          de.stklcode:jvault-connector, NOT Spring Vault (HashiCorp's own recommended client, but
+          architecturally forbidden here — org.springframework may only be used inside the
+          Spring-specific modules this repo's boundary rules name, and this isn't one of them) and
+          NOT com.bettercloud:vault-java-driver (unmaintained, known CVEs). jvault-connector is
+          Apache 2.0, actively maintained (latest release July 2026 at the time this was verified),
+          has zero Spring dependency, and its TransitClient interface maps directly onto Vault's
+          Transit encrypt/decrypt operations. Version confirmed against repo1.maven.org's own
+          maven-metadata.xml (<release>/<latest> both 1.5.5), not the possibly-stale
+          search.maven.org index, which listed an older version at the time of checking.
+        -->
+        <jvault-connector.version>1.5.5</jvault-connector.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.highkeen.opendcb</groupId>
+            <artifactId>opendcb-data-protection</artifactId>
+            <!-- Explicit version-boundary-crossing reference, per the root pom.xml's Versioning
+                 comment: opendcb-data-protection is versioned under opendcb-axon.version, not
+                 opendcb.version (this module's own line), and ${project.version} would silently
+                 resolve to the wrong group's version here. -->
+            <version>${opendcb-axon.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>de.stklcode.jvault</groupId>
+            <artifactId>jvault-connector</artifactId>
+            <version>${jvault-connector.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>vault</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Maven Central publishing: version/config inherited from the root pom.xml's
+                 pluginManagement; see the comment there for why examples/* don't declare these. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <extensions>true</extensions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

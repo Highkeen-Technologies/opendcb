@@ -26,23 +26,49 @@
 
 ## Dependency mediation
 
-- When adding a dependency on a library that bundles its own transitive
-  Jackson (or similarly foundational) pin, check `mvn dependency:tree` for
-  a version conflict before trusting the resolved classpath — Maven's
-  "nearest wins" mediation falls back to declaration order when two paths
-  to the same artifact are at equal depth, which can silently resolve to
-  an older transitive version instead of the newer one your own POM
-  otherwise implies. `opendcb-conductor-bridge`'s build hit this for real:
+- **This is a recurring risk pattern in this repo, not a one-off** — it has
+  now hit two modules independently, via two completely unrelated
+  transitive paths, both landing on the same failure shape (a Jackson
+  artifact silently mediated down to a too-old version, surfacing only as
+  a runtime `NoClassDefFoundError` inside whatever code path first
+  exercises the missing class). Treat any new dependency on a third-party
+  library that bundles its own transitive Jackson (or similarly
+  foundational) pin as a standing reason to proactively run `mvn
+  dependency:tree` for that module and check for a Jackson version
+  conflict — do this **before** considering the module done, not only
+  after a test run surfaces a `NoClassDefFoundError`. Maven's "nearest
+  wins" mediation falls back to declaration order when two paths to the
+  same artifact are at equal depth, which can silently resolve to an older
+  transitive version instead of the newer one your own POM otherwise
+  implies — there is no build warning when this happens.
+- **Instance 1 — `opendcb-conductor-bridge`, `jackson-core`:**
   `conductor-common` directly declares `jackson-core:2.13.2` at the same
   depth as the `2.22.1` pulled in transitively via `jackson-databind`, and
-  the older one won — silently, with no build warning — leaving a
-  `jackson-core` too old to contain `StreamReadConstraints` (added in
-  2.15) on the runtime classpath. This surfaced only at runtime, as a
-  `NoClassDefFoundError` inside the code path that actually exercised
-  Jackson, not at compile time. Fix by adding an explicit direct
-  dependency on the version you actually want — a direct (depth-1)
-  dependency always wins depth-based mediation regardless of any
-  declaration-order tie-break.
+  the older one won — leaving a `jackson-core` too old to contain
+  `StreamReadConstraints` (added in 2.15) on the runtime classpath. This
+  surfaced only at runtime, as a `NoClassDefFoundError` inside the code
+  path that actually exercised Jackson, not at compile time.
+- **Instance 2 — `opendcb-data-protection`, `jackson-annotations`:** a
+  completely different transitive path (Testcontainers, not a domain
+  library) tripped the identical failure shape. Testcontainers pulls in
+  `com.github.docker-java:docker-java-api` (test scope), which directly
+  declares `jackson-annotations:2.10.3`; that version won over the `2.22`
+  that `axon-common`'s Jackson 2.x `jackson-databind` and Axon's real
+  `JacksonConverter` (via `tools.jackson.databind`, Jackson 3.x) both
+  actually needed — leaving a `jackson-annotations` too old to contain
+  `JsonSerializeAs`, a class `JacksonAnnotationIntrospector`'s static
+  initializer references. Again only visible at test runtime, as a
+  `NoClassDefFoundError` the moment `JacksonConverter` was constructed —
+  not at compile time, and not from any module this project directly
+  chose to depend on for domain logic.
+- **Fix, both times the same:** add an explicit direct dependency on the
+  version you actually want — a direct (depth-1) dependency always wins
+  depth-based mediation regardless of any declaration-order tie-break.
+  Note `jackson-annotations` does not follow `jackson-databind`'s
+  patch-level versioning (`2.22.1` doesn't exist on Central for
+  `jackson-annotations`; the correct pin was `2.22`) — always confirm the
+  actual resolvable version via `mvn dependency:tree` rather than assuming
+  it matches `jackson-databind`'s version string.
 
 ## Grounding framework API usage
 

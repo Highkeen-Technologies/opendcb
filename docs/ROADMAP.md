@@ -361,6 +361,144 @@ opendcb/
 │   Conductor's Java SDK (io.orkes.conductor:conductor-client +
 │   conductor-common, 3.9.31-orkes), JDBC.
 │
+├── opendcb-data-protection/
+│   Crypto-shredding for erasure compliance (GDPR-style right to be
+│   forgotten, India's DPDP Act 2023, RBI cybersecurity/BFSI expectations,
+│   PCI-DSS where card data is involved) — motivated by planned BFSI use.
+│   NOT an implementation of Axon's Data Protection module, since that's
+│   fully paid (io.axoniq.framework:axoniq-data-protection — verified
+│   absent, annotations included, from the released org.axonframework
+│   source; unlike EventStorageEngine, no free interface exists here at
+│   all). See docs/ARCHITECTURE.md's "opendcb-data-protection" section for
+│   the full rationale.
+│   Own annotations (@DataSubjectId, @PersonalData), an
+│   OpenDcbEncryptingConverter wrapping any other Converter (hooks into
+│   the same free org.axonframework Converter interface
+│   AbstractDcbEventStorageEngine already uses), a per-data-subject key
+│   store (own JDBC table — erasure destroys the key material, not the
+│   row; an erased_at timestamp stays as an audit record that erasure
+│   happened, when, and for whom), an audit log of encrypt/decrypt/erase
+│   operations, and a pluggable MasterKeyProvider for envelope encryption
+│   (env-var implementation shipped first; KMS/Vault providers are
+│   separate, optional modules — see below).
+│   AesGcm (AES-256-GCM, JDK-only, no external crypto library) does the
+│   actual field encryption; OpenDcbKeyStore owns the per-subject key table
+│   (create-on-first-use, INSERT-and-catch-unique-violation to converge
+│   concurrent first-use races on one key rather than a separate SELECT
+│   first — same check-then-act-avoidance discipline as
+│   opendcb-conductor-bridge's saga_correlation table); EnvVarMasterKeyProvider
+│   is the shipped default MasterKeyProvider (reads a 32-byte key from a
+│   configured env var, Base64-decoded, and never falls back to any default
+│   key if it's missing/invalid).
+│   Status: DONE. EnvVarMasterKeyProviderTest covers missing/blank/
+│   non-Base64/wrong-length env values all failing fast, never falling back,
+│   plus a real wrap/unwrap round trip and confirmation that wrapping the
+│   same key twice produces different ciphertext (GCM's random nonce).
+│   OpenDcbEncryptingConverterIntegrationTest runs against a real PostgreSQL
+│   16 Testcontainers instance (own key-store + audit-log tables, no
+│   mocking): a full round trip leaves @PersonalData fields encrypted at
+│   rest and decrypted correctly on read; both record and non-record
+│   (direct-field-mutation) payload shapes are covered; erasing a data
+│   subject makes previously-encrypted ciphertext permanently undecryptable
+│   without touching the event log; a field that was never encrypted
+│   decrypts to null without throwing; concurrent first-use key creation for
+│   the same subject converges on exactly one key row; and the audit log is
+│   confirmed to never contain plaintext personal data.
+│   Depends on: org.axonframework (Converter only), JDBC.
+│
+├── opendcb-data-protection-vault/
+│   MasterKeyProvider implementation against HashiCorp Vault's Transit
+│   secrets engine (wrap/unwrap map directly onto Vault's encrypt/decrypt
+│   Transit endpoints). Self-hosted, no cloud vendor dependency — same
+│   philosophy as eventstore-postgres over Axon Server.
+│   Status: DONE. Implemented against the real, grounded jvault-connector
+│   API (de.stklcode.jvault:jvault-connector:1.5.5, Apache 2.0 — chosen over
+│   Spring Vault, which would violate this module's no-Spring rule, and over
+│   BetterCloud's older, unmaintained driver): HTTPVaultConnector.builder(...)
+│   .withToken(...).buildAndAuth() — buildAndAuth(), not build(), since only
+│   buildAndAuth() performs a real network authentication call, which is
+│   what makes fail-fast-on-unreachable-Vault actually work at construction
+│   time, not just on first use. wrapKey/unwrapKey call TransitClient's real
+│   encrypt/decrypt methods; Vault's own "vault:v1:..." ciphertext string is
+│   stored as-is (UTF-8 bytes), no re-encoding. VaultMasterKeyProviderTest
+│   runs against a real HashiCorp Vault 1.18.1 Testcontainers instance (no
+│   mocking) with the Transit engine enabled: a wrap/unwrap round trip
+│   recovers the original key; wrapping the same key twice produces
+│   different ciphertext (Transit's non-deterministic AEAD default) and both
+│   ciphertexts still unwrap correctly (safe given OpenDcbKeyStore only
+│   calls wrapKey once per subject key); the constructor fails fast and
+│   clearly when Vault is unreachable; and wrapKey fails clearly when the
+│   configured Transit key doesn't exist.
+│   Depends on: opendcb-data-protection, HashiCorp Vault's Java client
+│   (de.stklcode.jvault:jvault-connector).
+│
+├── opendcb-data-protection-aws-kms/
+│   MasterKeyProvider implementation against AWS KMS (Encrypt/Decrypt
+│   operations — deliberately not GenerateDataKey, which has KMS mint a
+│   brand-new key server-side rather than wrap a caller-supplied one, so it
+│   cannot implement this class's fixed wrapKey(byte[] existingKey)
+│   contract; earlier drafts of this doc describing GenerateDataKey/Decrypt
+│   were a documentation error, corrected alongside the implementation).
+│   Managed, has a Mumbai (ap-south-1) region for RBI-style data
+│   localization without cross-border key material transfer.
+│   Status: IMPLEMENTED, COMPILES, gated real-backend tests exist — but NOT
+│   YET VERIFIED against a real AWS KMS (or KMS-emulating) backend in any
+│   session to date. These are two different claims and this entry
+│   deliberately does not collapse them into a single unqualified DONE:
+│   "implemented + compiles + a real-backend test suite exists" (true,
+│   below) is not the same claim as "that suite has actually been run
+│   against KMS and passed" (not true yet — see below for exactly what's
+│   missing and why). Implemented against AWS SDK v2
+│   (software.amazon.awssdk:kms:2.53.1, confirmed current via Central's own
+│   maven-metadata.xml), grounded via javap against the real jar rather than
+│   assumed: KmsClient.encrypt(EncryptRequest)/.decrypt(DecryptRequest); the
+│   constructor takes an already-configured KmsClient + key ID/ARN (this
+│   class never builds its own client, so region/credentials/endpoint
+│   override are entirely the caller's concern). Every exception these
+│   operations can throw is unchecked and shares one common ancestor,
+│   SdkException (confirmed via javap against sdk-core/aws-core), so a
+│   single catch clause is sufficient and exhaustive for the
+│   fail-fast-and-clearly requirement.
+│   AwsKmsMasterKeyProviderTest is written for real Testcontainers coverage
+│   against LocalStack (localstack/localstack:4.9) with KMS enabled — round
+│   trip, a clear failure when the configured CMK doesn't exist, a clear
+│   failure on garbage ciphertext — but is annotated
+│   @EnabledIfEnvironmentVariable(named = "LOCALSTACK_AUTH_TOKEN", matches =
+│   ".+") rather than run unconditionally: since March 2026, LocalStack's
+│   unified image requires a LocalStack account + auth token even for
+│   free/non-commercial use. This is the first test suite in this repo with
+│   an external-account dependency — a deliberate, discussed trade-off
+│   (LocalStack + auth token, accepted over a real paid AWS KMS key or
+│   shipping untested), not an oversight. KMS's symmetric Encrypt/Decrypt
+│   (this provider's only use case) is fully emulated on LocalStack's free
+│   Hobby tier. Without LOCALSTACK_AUTH_TOKEN configured in the environment
+│   or CI secrets, the suite is honestly skipped, not falsely passed or
+│   failed.
+│
+│   What "genuinely exercising it" actually requires, stated explicitly so
+│   this doesn't get silently upgraded to DONE later without it actually
+│   happening: either (a) a LocalStack account's LOCALSTACK_AUTH_TOKEN
+│   (a free-tier account is sufficient for KMS's Hobby-tier-emulated
+│   Encrypt/Decrypt — this is not a paid-tier requirement, only an
+│   account-and-token requirement introduced by LocalStack's March 2026
+│   unified image), provisioned as an environment variable/CI secret the
+│   same way CENTRAL_USERNAME/CENTRAL_PASSWORD/GPG_PASSPHRASE already are;
+│   or (b) a real AWS account with a throwaway KMS CMK (cheap — KMS is
+│   priced per-key-per-month plus per-request, a single test CMK cleaned up
+│   after the run costs cents), swapping the test's LocalStack container for
+│   a real region-scoped KmsClient. As of this entry, NEITHER (a) NOR (b)
+│   has been provisioned or run in any coding session to date — the grounding
+│   done so far (javap against the real SDK jar's method signatures,
+│   confirming KmsClient.encrypt/.decrypt exist with the expected shapes and
+│   that SdkException is the sole necessary catch target) establishes that
+│   the code is written against the real API surface, not that it has been
+│   exercised end-to-end against a real or emulated KMS backend and produced
+│   a passing round trip. Treat this module as implementation-complete but
+│   integration-unverified until one of (a)/(b) happens and
+│   AwsKmsMasterKeyProviderTest is confirmed actually running (not skipped).
+│   Depends on: opendcb-data-protection, AWS SDK for KMS
+│   (software.amazon.awssdk:kms).
+│
 ├── opendcb-axon-spring-boot-routing/
 │   Wires Axon's own free JdbcTokenStore against whichever eventstore-*
 │   datasource is active, so PooledStreamingEventProcessor segments can be
@@ -670,10 +808,33 @@ events).
     real PostgreSQL, including a true-concurrency race test for the
     correlation table and an end-to-end task-worker test dispatching a real
     Axon command.
-13. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
+13. ~~`opendcb-data-protection`~~ — DONE. Crypto-shredding for erasure
+    compliance (GDPR/DPDP Act 2023/RBI/PCI-DSS), motivated by planned BFSI
+    use — see the module's own entry above and docs/ARCHITECTURE.md's
+    "opendcb-data-protection" section for the full rationale, including
+    why this is our own implementation rather than Axon's fully-paid Data
+    Protection module. Master key management ships with a pluggable
+    MasterKeyProvider interface + an env-var-based implementation first.
+14. ~~`opendcb-data-protection-vault`~~ — DONE, including real verification
+    (real HashiCorp Vault Testcontainers coverage, actually run and
+    passing). `opendcb-data-protection-aws-kms` — IMPLEMENTED and COMPILES,
+    NOT YET DONE in the same sense: its gated real-backend test suite has
+    never actually been run against AWS KMS or LocalStack in any session —
+    doing so needs either a LocalStack account token or a real, throwaway
+    AWS KMS key — see the module's own entry above for exactly what's
+    missing. Do not read this list entry's mention of both modules together
+    as implying they've reached the same level of verification. Real
+    KMS-backed MasterKeyProvider implementations, built immediately after
+    opendcb-data-protection itself rather than deferred, per an explicit
+    decision to support both a self-hosted (Vault) and a managed-cloud (AWS
+    KMS) path from the start — see docs/ARCHITECTURE.md's "Master key
+    provider modules" section. Both depend only on opendcb-data-protection's
+    MasterKeyProvider interface; neither changes opendcb-data-protection
+    itself.
+15. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
     `outbox-relay-webhook`, `bootstrap-axon-mysql`, `bootstrap-axon-mongo` —
     fill in once the pattern is validated once.
-14. `integrations/eventstore-<future-framework>` — only if/when a second
+16. `integrations/eventstore-<future-framework>` — only if/when a second
     framework actually becomes relevant. Not speculative work until then.
 
 ## Open questions worth deciding before writing more code

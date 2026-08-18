@@ -40,6 +40,18 @@ and keeps the framework-agnostic layer honestly agnostic.
                                               Conductor's Java SDK + JDBC (own saga_correlation
                                               table). Genuinely Axon-coupled, unlike scheduling-core
                                               — see "opendcb-conductor-bridge" section below for why.
+5d. opendcb-data-protection                  depends on: org.axonframework (Converter only) + JDBC
+                                              (own key-store table) + a pluggable MasterKeyProvider
+                                              (env-var implementation shipped; KMS/Vault providers
+                                              are future work, not blocking). Genuinely Axon-coupled,
+                                              same shape as opendcb-conductor-bridge — see
+                                              "opendcb-data-protection" section below for why.
+5e. opendcb-data-protection-vault            depends on: opendcb-data-protection + HashiCorp Vault's
+                                              Java client. Optional MasterKeyProvider implementation.
+   opendcb-data-protection-aws-kms           depends on: opendcb-data-protection + AWS KMS SDK.
+                                              Optional MasterKeyProvider implementation. Neither
+                                              module is required by, or changes, opendcb-data-protection
+                                              itself — see "Master key provider modules" below.
 6. outbox-relay-kafka                        depends on: outbox-relay-core
    outbox-relay-rabbitmq                     depends on: outbox-relay-core
    outbox-relay-webhook                      depends on: outbox-relay-core
@@ -266,6 +278,99 @@ Axon from outside its own command-handling path, and it's the reason this
 module — unlike `opendcb-scheduling-core` — genuinely needs a dependency
 on `org.axonframework`.
 
+## opendcb-data-protection: crypto-shredding for erasure, not a hand-built encryption scheme
+
+**Why this exists.** Event sourcing's core guarantee — an immutable,
+append-only log — directly conflicts with regulatory erasure requirements
+(GDPR's "right to be forgotten," India's DPDP Act 2023, BFSI-sector
+expectations under RBI's cybersecurity framework and, where card data is
+involved, PCI-DSS). You cannot delete a historical event without breaking
+replay. Axon's own answer to this — the "Data Protection" module — is
+verified to be entirely paid: `io.axoniq.framework:axoniq-data-protection`,
+confirmed against the actual installation docs, and confirmed absent
+(annotations, engine, everything) from the released, free
+`org.axonframework` source. Unlike `EventStorageEngine`, where the
+*interface* was free and only implementations were paid, this capability
+has no free surface at all to build against.
+
+**Why we build our own rather than treat this as out of scope.** The
+underlying technique — crypto-shredding — is a well-established,
+generic cryptographic pattern, not Axon proprietary IP: encrypt
+personal-data fields using a key tied to the data subject, store that key
+*outside* the event log, and "erase" a subject by destroying their key.
+The event log stays immutable and untouched; the data becomes permanently
+unrecoverable. Given a BFSI deployment context, this is a genuine
+compliance requirement, not a nice-to-have — worth the same rigor every
+correctness-critical module in this toolkit has received, not a shortcut.
+
+**Design, deliberately mirroring the *pattern* Axon's own paid docs
+describe (verified directly, not guessed), using entirely our own,
+independent implementation and our own annotations** — never implying
+this implements Axon's paid SPI, same discipline as
+`opendcb-scheduling-core` and `opendcb-conductor-bridge`:
+
+- **`@DataSubjectId` / `@PersonalData`** — OpenDCB's own annotations,
+  applied to fields on event payload classes.
+- **`OpenDcbEncryptingConverter`** — wraps any other `Converter` (e.g.
+  `JacksonConverter`, already used elsewhere in this toolkit), encrypting
+  annotated fields before delegating to the wrapped converter for
+  serialization, decrypting after deserialization. This hooks into the
+  exact same `Converter` interface `AbstractDcbEventStorageEngine` already
+  uses — the only point of contact with `org.axonframework` this module
+  needs.
+- **A key store** (own JDBC table, independent of the event log): one
+  encryption key per data subject, generated on first use. `eraseDataSubject(id)`
+  destroys that key. Deliberately **not** a hard row-delete — the key
+  material is destroyed/overwritten, but the row (and an `erased_at`
+  timestamp) stays as an audit record that erasure happened, when, and for
+  whom, without retaining anything that could reconstruct the erased data.
+  BFSI audit expectations generally require proof that erasure occurred,
+  not just silence where a record used to be.
+- **Envelope encryption, not a single flat layer**: a pluggable
+  `MasterKeyProvider` wraps (encrypts) each per-subject key before it's
+  stored, rather than storing per-subject keys in plaintext next to the
+  data they protect. `EnvVarMasterKeyProvider` ships in
+  `opendcb-data-protection` itself (development and smaller deployments);
+  real KMS-backed providers ship as separate, optional modules — see
+  below.
+- **An audit log** of encrypt/decrypt/erase operations (own table) — a
+  first-class requirement here given the regulatory context, not an
+  afterthought bolted on later.
+
+### Master key provider modules: pluggable, separate, opt-in
+
+Same reasoning as `eventstore-postgres`/`eventstore-mysql` being separate
+modules rather than bundled dependencies: nobody using
+`EnvVarMasterKeyProvider` should be forced to pull an AWS SDK or a Vault
+client onto their classpath. Every `MasterKeyProvider` implementation
+beyond the env-var default lives in its own module, depending only on
+`opendcb-data-protection` (for the interface) and its respective client
+library:
+
+- **`opendcb-data-protection-vault`** — implements `MasterKeyProvider`
+  against HashiCorp Vault's Transit secrets engine (wrap/unwrap operations
+  map directly onto Vault's `encrypt`/`decrypt` Transit endpoints — Vault
+  never needs to see the per-subject key in a form OpenDCB has to manage
+  key rotation for itself). Self-hosted, no cloud vendor dependency —
+  philosophically consistent with `eventstore-postgres` over Axon Server:
+  a client can run this entirely on infrastructure they control.
+- **`opendcb-data-protection-aws-kms`** — implements `MasterKeyProvider`
+  against AWS KMS (`Encrypt`/`Decrypt` operations — deliberately not
+  `GenerateDataKey`, which has KMS mint a brand-new key server-side and so
+  cannot implement `wrapKey(byte[] existingKey)`'s fixed contract of
+  wrapping a caller-supplied plaintext; `Encrypt`/`Decrypt` is the correct,
+  and only, pairing for that interface). Managed, lower operational burden
+  than self-hosting Vault; has a Mumbai (ap-south-1) region, so RBI-style
+  data-localization requirements can be satisfied without cross-border key
+  material transfer.
+- **Both are equally "correct"** — which to use is a deployment decision
+  (self-hosted-everything vs. managed-cloud), not a capability difference.
+  A future provider (Azure Key Vault, GCP KMS, a PKCS#11 HSM) follows the
+  same pattern: implement `MasterKeyProvider`, ship as its own module,
+  zero changes to `opendcb-data-protection` or `OpenDcbEncryptingConverter`
+  required — this is precisely what the interface being pluggable from
+  the start was for.
+
 ## Bootstrap modules: zero-boilerplate wiring without requiring Spring
 
 `integrations/eventstore-axon` deliberately never depends on a specific
@@ -340,6 +445,9 @@ first, `-spring-boot-...` is the suffix.
 | `outbox-relay-core` | `com.highkeen.opendcb.relay.core` |
 | `opendcb-scheduling-core` | `com.highkeen.opendcb.scheduling.core` |
 | `opendcb-conductor-bridge` | `com.highkeen.opendcb.conductor.bridge` |
+| `opendcb-data-protection` | `com.highkeen.opendcb.dataprotection` |
+| `opendcb-data-protection-vault` | `com.highkeen.opendcb.dataprotection.vault` |
+| `opendcb-data-protection-aws-kms` | `com.highkeen.opendcb.dataprotection.awskms` |
 | `outbox-relay-kafka` | `com.highkeen.opendcb.relay.kafka` |
 | `outbox-relay-rabbitmq` | `com.highkeen.opendcb.relay.rabbitmq` |
 | `outbox-relay-webhook` | `com.highkeen.opendcb.relay.webhook` |

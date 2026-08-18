@@ -75,8 +75,8 @@
           share Axon's release cadence, so they version independently as opendcb.version;
           Axon-coupled modules (integrations/eventstore-axon, bootstrap-axon-postgres,
           opendcb-axon-spring-boot-starter, opendcb-axon-spring-boot-routing,
-          opendcb-conductor-bridge) are qualified with the Axon Framework version they're built
-          against, as opendcb-axon.version.
+          opendcb-conductor-bridge, opendcb-data-protection) are qualified with the Axon
+          Framework version they're built against, as opendcb-axon.version.
 
           Every module in one of these two groups declares its own explicit <version> below,
           overriding this POM's inherited version (Maven only inherits <version> from the parent
@@ -143,6 +143,9 @@
         <module>outbox-relay-rabbitmq</module>
         <module>opendcb-scheduling-core</module>
         <module>opendcb-conductor-bridge</module>
+        <module>opendcb-data-protection</module>
+        <module>opendcb-data-protection-vault</module>
+        <module>opendcb-data-protection-aws-kms</module>
         <module>examples/plain-java-sample</module>
         <module>examples/microservices-sample/orders-service</module>
         <module>examples/microservices-sample/shipping-service</module>

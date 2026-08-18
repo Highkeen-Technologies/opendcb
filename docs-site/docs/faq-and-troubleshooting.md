@@ -60,6 +60,25 @@ publisher against it today is straightforward if you need it before the
 official module exists — follow `RabbitMqPublisher`'s shape (retryable vs.
 non-retryable exception handling) as the reference.
 
+## Why did Vault silently create a new Transit key instead of failing?
+
+This is real, documented HashiCorp Vault Transit behavior, not an OpenDCB
+bug: the `encrypt` endpoint auto-creates ("auto-vivifies") a named Transit
+key on first use if it doesn't already exist, rather than rejecting the
+request. If `opendcb-data-protection-vault`'s `VaultMasterKeyProvider` is
+configured with a typo'd or otherwise wrong Transit key name, `wrapKey`
+does **not** fail — Vault just mints a new key under that name and encrypts
+against it, so a misconfiguration silently succeeds against the wrong key
+instead of failing loudly.
+
+**Fix it before production**: restrict the Vault token's ACL policy to
+deny `create` on `transit/keys/*`, allowing only `update` on
+`transit/encrypt/<your-key>` and `transit/decrypt/<your-key>`. With that
+policy in place, a wrong key name fails immediately on the first `wrapKey`
+call instead of silently creating an unintended key. See
+[Data Protection and Key Management](module-guides/data-protection-and-key-management.md#security-consideration-vault-auto-creates-a-missing-transit-key-on-encrypt)
+for the full explanation and the exact policy HCL.
+
 ## What's next
 
 See [Module and Package Reference](reference/module-and-package-reference.md)

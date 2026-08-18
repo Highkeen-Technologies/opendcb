@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright the OpenDCB contributors
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.highkeen.opendcb</groupId>
+        <artifactId>opendcb</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>opendcb-data-protection</artifactId>
+    <!-- Axon-tied version line: OpenDcbEncryptingConverter implements Axon's real
+         org.axonframework.conversion.Converter SPI (not an implementation of Axon's paid,
+         separately-licensed axoniq-data-protection module, which does not exist; this is
+         OpenDCB's own
+         crypto-shredding solution), so it versions alongside the other Axon-coupled modules;
+         see the root pom.xml's opendcb-axon.version property comment. -->
+    <version>${opendcb-axon.version}</version>
+    <packaging>jar</packaging>
+
+    <name>OpenDCB :: Data Protection</name>
+    <description>
+        OpenDCB's own crypto-shredding solution for GDPR/DPDP Act/RBI/PCI-DSS-style
+        "right to be forgotten" erasure: per-data-subject AES-256-GCM keys, envelope-encrypted
+        by a pluggable master key, wrapped around a delegate org.axonframework.conversion.Converter.
+        Erasure destroys the subject's key rather than rewriting the immutable event log. Not an
+        implementation of Axon's paid axoniq-data-protection module, which does not exist
+        in the free org.axonframework tree.
+    </description>
+    <url>https://github.com/Highkeen-Technologies/opendcb</url>
+
+    <scm>
+        <connection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</connection>
+        <developerConnection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</developerConnection>
+        <url>https://github.com/Highkeen-Technologies/opendcb</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <!-- Overrides the root pom.xml's maven.deploy.skip=true default: this is one of the
+             publishable modules, so its deploy goal must actually run. -->
+        <maven.deploy.skip>false</maven.deploy.skip>
+        <postgresql.version>42.7.4</postgresql.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <!--
+              Only org.axonframework artifact this module needs. axon-conversion (where
+              Converter/ConversionException live) and axon-common (where ComponentDescriptor/
+              DescribableComponent live) are both direct children of axon-messaging, not of each
+              other (confirmed via `mvn dependency:tree` against integrations/eventstore-axon,
+              which resolves this module's exact three types the same way), so declaring
+              axon-messaging alone, matching integrations/eventstore-axon's own dependency
+              choice for the identical Converter/ComponentDescriptor pair, is both sufficient
+              and consistent with the rest of the repo, rather than declaring axon-conversion and
+              axon-common separately.
+            -->
+            <groupId>org.axonframework</groupId>
+            <artifactId>axon-messaging</artifactId>
+        </dependency>
+
+        <dependency>
+            <!--
+              Explicit direct dependency needed to win Maven's depth-based mediation: testcontainers
+              pulls in com.github.docker-java:docker-java-api (test scope), which declares
+              jackson-annotations 2.10.3 directly (depth 2), and that version wins over the newer
+              2.21/2.22 that axon-common's jackson-databind and tools.jackson.databind both actually
+              need (depth 3, 4) under Maven's nearest-wins rule, leaving a jackson-annotations too
+              old to contain JsonSerializeAs, a class tools.jackson.databind's own
+              JacksonAnnotationIntrospector static initializer references, causing a
+              NoClassDefFoundError the moment JacksonConverter is constructed. Same category of bug
+              already documented in docs/CONVENTIONS.md's "Dependency mediation" section for
+              opendcb-conductor-bridge's jackson-core conflict; fixed the same way, a direct
+              (depth-1) dependency on the version actually required.
+            -->
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <!-- jackson-annotations does not follow jackson-databind's patch-level versioning; the
+                 dependency tree shows jackson-databind 2.22.1 itself resolving to
+                 jackson-annotations 2.22 (no patch suffix), so pin that exact version rather than
+                 ${jackson.version}. -->
+            <version>2.22</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Maven Central publishing: version/config inherited from the root pom.xml's
+                 pluginManagement; see the comment there for why examples/* don't declare these. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <extensions>true</extensions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

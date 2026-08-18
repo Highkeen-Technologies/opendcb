@@ -66,6 +66,7 @@ nav:
       - Scheduling Events: module-guides/scheduling-events.md
       - Sagas with Conductor: module-guides/sagas-with-conductor.md
       - Event Routing and Microservices: module-guides/event-routing-and-microservices.md
+      - Data Protection and Key Management: module-guides/data-protection-and-key-management.md
   - Tutorials:
       - Build Your First Event-Sourced Entity: tutorials/build-your-first-event-sourced-entity.md
       - Scale Across Multiple Instances: tutorials/scale-across-multiple-instances.md
