@@ -55,7 +55,16 @@ jobs:
     # docs/CONTRIBUTING.md's "Branch protection" section for the full
     # rationale and how this was verified before being applied to main.
     steps:
+      # persist-credentials: false — actions/checkout otherwise stores
+      # GITHUB_TOKEN in a git http.extraheader config that overrides any
+      # embedded credentials in a later `git remote set-url`, silently
+      # forcing the bump step's push back onto GITHUB_TOKEN (and its 403
+      # against a protected main) even though the App token was supplied.
+      # Verified this exact failure mode directly against the scratch
+      # bypass-test workflow before relying on it here.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Resolves the release version from whichever trigger fired this run,
       # then validates it before anything else runs — a malformed tag or a
