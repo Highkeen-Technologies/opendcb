@@ -44,11 +44,16 @@ jobs:
   publish:
     name: Build, sign, and stage a release on Maven Central
     runs-on: ubuntu-latest
-    # Overrides the workflow-level contents:read default — only this job's
-    # final step (bumping the committed local-dev-default versions on main
-    # after a successful publish) needs push access.
-    permissions:
-      contents: write
+    # No contents:write override here (unlike an earlier version of this
+    # file): once main is branch-protected, a plain GITHUB_TOKEN push is
+    # rejected regardless of permissions — GitHub deliberately does not let
+    # GITHUB_TOKEN bypass a protected branch, since that would let any
+    # collaborator push anything by writing a workflow that does it. The
+    # bump step below instead authenticates as the opendcb-release-bot
+    # GitHub App (contents:read-and-write on this repo only, installed only
+    # here), which IS on main's ruleset bypass list — see
+    # docs/CONTRIBUTING.md's "Branch protection" section for the full
+    # rationale and how this was verified before being applied to main.
     steps:
       - uses: actions/checkout@v7
 
@@ -192,11 +197,29 @@ jobs:
       # two <opendcb...version> properties are separately named elements
       # (not <version>), so they're matched by their own tag names instead
       # and can't collide with that first-match rule.
+      # Mints a short-lived (~1hr) installation token for the
+      # opendcb-release-bot GitHub App (contents:read-and-write, installed
+      # only on this repo) — this, not GITHUB_TOKEN, is what's on main's
+      # ruleset bypass list, since GitHub does not permit GITHUB_TOKEN
+      # itself to bypass a protected branch under any permissions setting.
+      # RELEASE_BOT_APP_ID / RELEASE_BOT_APP_PRIVATE_KEY are repo secrets;
+      # the private key value never appears in this file or any log.
+      - name: Mint an installation token for the release bot App
+        if: success()
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: opendcb
+
       - name: Bump committed local-dev-default versions to match the release
         if: success()
         env:
           NEW_VERSION: ${{ steps.version.outputs.opendcb_version }}
           NEW_AXON_VERSION: ${{ steps.version.outputs.opendcb_axon_version }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -212,8 +235,17 @@ jobs:
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Commit author is the App's own bot identity (opendcb-release-bot[bot],
+          # user id 318557238 — confirmed via `gh api users/opendcb-release-bot%5Bbot%5D`),
+          # not the generic github-actions[bot] this step used before the App
+          # existed. The push itself authenticates via the App's installation
+          # token over HTTPS (not the checkout's default credentials), which is
+          # what actually lets this land on a protected main — the git
+          # author/committer fields below are just commit metadata and don't
+          # affect push authorization.
+          git config user.name "opendcb-release-bot[bot]"
+          git config user.email "318557238+opendcb-release-bot[bot]@users.noreply.github.com"
           git add pom.xml
           git commit -m "Bump committed local-dev-default versions to ${NEW_VERSION} after release"
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin main
