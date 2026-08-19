@@ -44,6 +44,11 @@ jobs:
   publish:
     name: Build, sign, and stage a release on Maven Central
     runs-on: ubuntu-latest
+    # Overrides the workflow-level contents:read default — only this job's
+    # final step (bumping the committed local-dev-default versions on main
+    # after a successful publish) needs push access.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -152,3 +157,63 @@ jobs:
           mvn --batch-mode clean deploy -DskipTests=false -P release
           -Dopendcb.version=${{ steps.version.outputs.opendcb_version }}
           -Dopendcb-axon.version=${{ steps.version.outputs.opendcb_axon_version }}
+
+      # Runs ONLY if the mvn deploy step above actually succeeded — `if:
+      # success()` here is belt-and-suspenders on top of the Actions default
+      # (a failed prior step already skips every later step with no `if:`
+      # override), because a failed/partial publish must never leave main
+      # looking like it shipped something it didn't.
+      #
+      # Deliberately checks out `main` FRESH here (via an explicit shallow
+      # fetch + checkout -B), rather than editing pom.xml on whatever ref
+      # this run started from: a tag-push trigger leaves the job on a
+      # detached HEAD at the tag commit, which can already be behind main's
+      # real tip by the time the release finishes. Bumping and pushing from
+      # that stale ref would either fail as a non-fast-forward push or
+      # (worse, if ever forced) silently roll main back. Fetching main's own
+      # tip immediately before editing keeps this a plain fast-forward
+      # commit no matter how main has moved since the tag was cut. Verified
+      # this exact scenario (a commit landing on main after the tag, then
+      # the bump step running from the tag's detached HEAD) against a
+      # scratch repo before relying on it for a real release.
+      #
+      # sed, not xmlstarlet/any plugin — deliberately simple. The
+      # `0,/regex/s//repl/` form is a GNU sed idiom (matches only the FIRST
+      # occurrence in the file); this only ever runs on ubuntu-latest's real
+      # GNU sed, verified directly in an ubuntu container rather than
+      # assumed — the equivalent command silently no-ops on macOS/BSD sed,
+      # which is exactly the kind of "looks fine, does nothing" failure this
+      # step must not have. That first-match behavior is what lets the same
+      # pattern target the root aggregator's own <version> element (line 24
+      # today) without also rewriting the many other <version> tags further
+      # down the file (BOM/plugin versions in dependencyManagement/
+      # pluginManagement) — root has no <parent> block, so its own
+      # <version> is always the first <version> element in the file. The
+      # two <opendcb...version> properties are separately named elements
+      # (not <version>), so they're matched by their own tag names instead
+      # and can't collide with that first-match rule.
+      - name: Bump committed local-dev-default versions to match the release
+        if: success()
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.opendcb_version }}
+          NEW_AXON_VERSION: ${{ steps.version.outputs.opendcb_axon_version }}
+        run: |
+          set -euo pipefail
+
+          git fetch --depth=1 origin main
+          git checkout -B main FETCH_HEAD
+
+          sed -i "0,/<version>[^<]*<\/version>/s//<version>${NEW_VERSION}<\/version>/" pom.xml
+          sed -i "s/<opendcb.version>[^<]*<\/opendcb.version>/<opendcb.version>${NEW_VERSION}<\/opendcb.version>/" pom.xml
+          sed -i "s/<opendcb-axon.version>[^<]*<\/opendcb-axon.version>/<opendcb-axon.version>${NEW_AXON_VERSION}<\/opendcb-axon.version>/" pom.xml
+
+          if git diff --quiet -- pom.xml; then
+            echo "pom.xml on main already reflects ${NEW_VERSION} — nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pom.xml
+          git commit -m "Bump committed local-dev-default versions to ${NEW_VERSION} after release"
+          git push origin main

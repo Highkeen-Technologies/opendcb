@@ -57,7 +57,7 @@
       Maven 3.6.1+ offers child.*.inherit.append.path="false" attributes to suppress that, but
       relying on an obscure, easy-to-get-wrong attribute for metadata that becomes immutable
       once published to Maven Central is not worth the risk versus just repeating the identical,
-      correct literal values in each of the 10 publishable modules below.
+      correct literal values in each of the 13 publishable modules below.
     -->
 
     <properties>
@@ -71,9 +71,16 @@
         <!--
           Two independent version lines: see docs/ROADMAP.md's "Versioning" open question and
           docs/ARCHITECTURE.md's module dependency order. Framework-agnostic modules
-          (eventstore-core/-postgres/-mysql/-mongo, outbox-relay-*, opendcb-scheduling-core) don't
-          share Axon's release cadence, so they version independently as opendcb.version;
-          Axon-coupled modules (integrations/eventstore-axon, bootstrap-axon-postgres,
+          (eventstore-core/-postgres/-mysql/-mongo, outbox-relay-*, opendcb-scheduling-core,
+          opendcb-data-protection-vault, opendcb-data-protection-aws-kms) don't share Axon's
+          release cadence, so they version independently as opendcb.version — this includes the
+          two data-protection provider modules even though they depend on the Axon-coupled
+          opendcb-data-protection, since depending on an Axon-tied module doesn't itself make a
+          module Axon-tied; only a direct org.axonframework dependency does (confirmed via each
+          module's own `mvn dependency:tree`: opendcb-data-protection-vault and
+          opendcb-data-protection-aws-kms only pull org.axonframework:axon-messaging in
+          transitively, through opendcb-data-protection, never as a direct dependency of their
+          own). Axon-coupled modules (integrations/eventstore-axon, bootstrap-axon-postgres,
           opendcb-axon-spring-boot-starter, opendcb-axon-spring-boot-routing,
           opendcb-conductor-bridge, opendcb-data-protection) are qualified with the Axon
           Framework version they're built against, as opendcb-axon.version.
@@ -92,16 +99,20 @@
           external; examples/* (not meant to be depended on externally either) are the only
           modules that inherit it unchanged, for simplicity.
 
-          IMPORTANT — these two values below are LOCAL-DEV DEFAULTS ONLY, not "the current release
-          version": a real release is always tag-driven (push a v X.Y.Z tag, or supply one via the
-          workflow_dispatch "version" input) and .github/workflows/release.yml resolves/validates
-          that tag/input, then overrides these properties on the command line via
-          -Dopendcb.version=... -Dopendcb-axon.version=...-<axon-qualifier>, which
-          flatten-maven-plugin (below) bakes into the POM actually published to Maven Central. A
-          plain local `mvn install` with no -D override just uses whatever's committed here, which
-          is fine since nothing gets published that way. Consequently, NO commit or PR should ever
-          exist whose sole purpose is bumping these two numbers going forward — see
-          docs/ROADMAP.md's "Versioning" section for the full scheme.
+          IMPORTANT — these two values below (and the root aggregator's own <version> above) are
+          LOCAL-DEV DEFAULTS ONLY, not "the current release version": a real release is always
+          tag-driven (push a v X.Y.Z tag, or supply one via the workflow_dispatch "version" input)
+          and .github/workflows/release.yml resolves/validates that tag/input, then overrides
+          these properties on the command line via -Dopendcb.version=...
+          -Dopendcb-axon.version=...-<axon-qualifier>, which flatten-maven-plugin (below) bakes
+          into the POM actually published to Maven Central. A plain local `mvn install` with no -D
+          override just uses whatever's committed here, which is fine since nothing gets published
+          that way. After a successful publish, release.yml's own "Bump committed local-dev-default
+          versions to match the release" step automatically updates these committed values (and
+          the root <version>) to match and pushes that commit straight to main, so `main` always
+          reflects the last shipped version instead of looking permanently stale — no manual
+          commit or PR should ever be needed to bump these numbers; see docs/ROADMAP.md's
+          "Versioning" section for the full scheme.
         -->
         <opendcb.version>1.0.0</opendcb.version>
         <opendcb-axon.version>1.0.0-axon5.1</opendcb-axon.version>
@@ -126,7 +137,7 @@
           -Ddetail=true` rather than assumed) so `mvn deploy`/`mvn clean deploy` never attempts to
           upload them; examples/* additionally still declare an explicit, redundant-but-harmless
           <skip>true</skip> plugin stub of their own from before this property existed. Each of the
-          10 publishable modules overrides this back to false in its own <properties>, the same
+          13 publishable modules overrides this back to false in its own <properties>, the same
           override-in-the-child pattern as opendcb.version/opendcb-axon.version above.
         -->
         <maven.deploy.skip>true</maven.deploy.skip>
@@ -207,7 +218,7 @@
                   target" open question). Declared here in pluginManagement so version and
                   execution config live in one place, but NOT bound to <build><plugins> in this
                   parent POM: that would apply to every child, including examples/*, which are
-                  deliberately never published. Each of the 10 publishable modules opts in with its
+                  deliberately never published. Each of the 13 publishable modules opts in with its
                   own minimal <build><plugins> stub referencing these by groupId/artifactId only;
                   examples/* modules declare nothing extra, so these plugins are configured but
                   never actually invoked for them. Verified against Maven's documented
@@ -378,7 +389,7 @@
     <!--
       Activate with `mvn clean deploy -P release` for the real Maven Central publish flow.
       Everything else (source/javadoc attachment, the central-publishing-maven-plugin upload
-      binding to the deploy phase) is already wired unconditionally in each of the 10 publishable
+      binding to the deploy phase) is already wired unconditionally in each of the 13 publishable
       modules; the only thing gated behind this profile is turning GPG signing back on, since
       that's the one step plain `mvn clean install` must not attempt without a configured key.
     -->
