@@ -1,0 +1,48 @@
+name: SCRATCH - App bypass test (temporary, delete after use)
+
+# Temporary workflow used ONLY to verify that the opendcb-release-bot GitHub
+# App's installation token can push past a protected branch's ruleset,
+# without needing to trigger a real Maven Central release just to test the
+# git-push mechanism. Exercises the exact same mint-token-then-push shape as
+# release.yml's own bump step. Deleted once the scratch branch test is done.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch to push a trivial test commit to
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  push-as-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_branch }}
+
+      - name: Mint an installation token for the release bot App
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: opendcb
+
+      - name: Push a trivial commit as the App
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          echo "bypass test $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> SCRATCH_BYPASS_TEST.txt
+          git config user.name "opendcb-release-bot[bot]"
+          git config user.email "318557238+opendcb-release-bot[bot]@users.noreply.github.com"
+          git add SCRATCH_BYPASS_TEST.txt
+          git commit -m "Scratch: App bypass test push"
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git"
+          git push origin "HEAD:${{ inputs.target_branch }}"
