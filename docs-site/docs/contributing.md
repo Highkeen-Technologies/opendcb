@@ -51,16 +51,24 @@ locally (or once you're ready for CI to run it for you).
 properties declared once in the root `pom.xml` — `opendcb.version` (the
 framework-agnostic module group) and `opendcb-axon.version` (the
 Axon-coupled group) — see `docs/ROADMAP.md`'s "Versioning" section for the
-full two-group split and why they're independent. There's no
-`-SNAPSHOT` suffix anywhere in this scheme: the committed values are
-literal, shared version numbers every branch and PR builds against
-locally and in CI. They're local-dev defaults only, never what actually
-gets published — `release.yml` overrides them with `-D` flags resolved
-from the release tag (or `workflow_dispatch` input) at publish time, and
-automatically bumps the committed values back to match immediately after
-a successful release, so `main` always reflects the last shipped version
-rather than drifting stale. No PR should ever exist whose sole purpose is
-bumping these two numbers by hand.
+full two-group split and why they're independent. The committed values
+carry a standard Maven `-SNAPSHOT` suffix (e.g. `1.1.1-SNAPSHOT` /
+`1.1.1-axon5.1-SNAPSHOT`) — a deliberate adoption of Maven's own
+dev-version convention, not a one-off — with `-SNAPSHOT` always the
+trailing segment, since that's the only placement Maven's tooling actually
+recognizes as a snapshot. They're local-dev defaults only, never what
+actually gets published — `release.yml` overrides them with `-D` flags
+resolved from the release tag (or `workflow_dispatch` input) at publish
+time, exactly as before; the override mechanism doesn't care whether the
+committed baseline is a plain release-shaped string or a `-SNAPSHOT`
+string. After a successful release, `release.yml` bumps the committed
+values forward to the *next patch version's* `-SNAPSHOT` (e.g. releasing
+`1.1.0` bumps `main` to `1.1.1-SNAPSHOT`, not back to `1.1.0`) — patch,
+not minor, since it's the safe default bump size and costs nothing to
+guess wrong: the tag-driven release itself never derives from this
+committed value, so it only has to be *a* valid unreleased-dev version,
+not a correctly-predicted next release number. No PR should ever exist
+whose sole purpose is bumping these two numbers by hand.
 
 **`release.yml` is never triggered by a pull request.** It only runs on a
 pushed `v*.*.*` tag or a manually dispatched `workflow_dispatch` run — an
