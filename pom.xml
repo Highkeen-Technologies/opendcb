@@ -21,7 +21,7 @@
 
     <groupId>com.highkeen.opendcb</groupId>
     <artifactId>opendcb</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.1-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>OpenDCB</name>
@@ -107,15 +107,32 @@
           -Dopendcb-axon.version=...-<axon-qualifier>, which flatten-maven-plugin (below) bakes
           into the POM actually published to Maven Central. A plain local `mvn install` with no -D
           override just uses whatever's committed here, which is fine since nothing gets published
-          that way. After a successful publish, release.yml's own "Bump committed local-dev-default
-          versions to match the release" step automatically updates these committed values (and
-          the root <version>) to match and pushes that commit straight to main, so `main` always
-          reflects the last shipped version instead of looking permanently stale — no manual
-          commit or PR should ever be needed to bump these numbers; see docs/ROADMAP.md's
-          "Versioning" section for the full scheme.
+          that way, SNAPSHOT baseline or not — flatten-maven-plugin and the -D override mechanism
+          behave identically regardless of whether the committed baseline looks like "1.1.0" or
+          "1.1.1-SNAPSHOT" (verified: a real -D override still wins and still gets baked into the
+          flattened POM either way).
+
+          Committed values follow Maven's own standard dev-version convention: the NEXT PATCH after
+          the last real release, suffixed "-SNAPSHOT" — deliberately patch, not minor, as the
+          default bump size, since a patch release is always a safe/small guess about what's coming
+          next and costs nothing if the actual next release turns out to be a minor or major bump
+          instead (the tag-driven release itself is never derived from this committed value, so
+          guessing wrong here doesn't block or mis-version anything). "-SNAPSHOT" MUST be the final
+          segment of the string, never inserted before a qualifier like "-axon5.1" — Maven's own
+          tooling only recognizes a version as a snapshot (e.g. generates version-level snapshot
+          metadata on install/deploy) when the version string ends with literal "-SNAPSHOT"; verified
+          empirically via a scratch install comparing "1.1.1-axon5.1-SNAPSHOT" (recognized) against
+          "1.1.1-SNAPSHOT-axon5.1" (silently NOT recognized — treated as an ordinary release
+          version), not assumed from the qualifier's positioning looking equivalent. After a
+          successful publish, release.yml's own "Bump committed local-dev-default versions to
+          next-patch-SNAPSHOT" step automatically recomputes and updates these committed values (and
+          the root <version>) and pushes that commit straight to main, so `main` always carries a
+          real, buildable SNAPSHOT baseline for whatever comes after the last shipped version instead
+          of looking permanently stale — no manual commit or PR should ever be needed to bump these
+          numbers; see docs/ROADMAP.md's "Versioning" section for the full scheme.
         -->
-        <opendcb.version>1.0.0</opendcb.version>
-        <opendcb-axon.version>1.0.0-axon5.1</opendcb-axon.version>
+        <opendcb.version>1.1.1-SNAPSHOT</opendcb.version>
+        <opendcb-axon.version>1.1.1-axon5.1-SNAPSHOT</opendcb-axon.version>
 
         <!--
           gpg:sign is bound to the verify phase (below), which plain `mvn clean install` also

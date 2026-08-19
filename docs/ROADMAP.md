@@ -1016,11 +1016,27 @@ events).
   meant to be published or depended on externally; each carries a one-line
   comment explaining why.
 
-  The committed values of `opendcb.version` (`1.0.0`) and
-  `opendcb-axon.version` (`1.0.0-axon5.1`) are LOCAL-DEV DEFAULTS ONLY, not
-  "the current release version" — a plain local `mvn install` with no `-D`
-  override just uses whatever's committed, which is fine since that build is
-  never published. The real, tag-driven scheme:
+  The committed values of `opendcb.version` (`1.1.1-SNAPSHOT`) and
+  `opendcb-axon.version` (`1.1.1-axon5.1-SNAPSHOT`) are LOCAL-DEV DEFAULTS
+  ONLY, not "the current release version" — a plain local `mvn install`
+  with no `-D` override just uses whatever's committed, which is fine since
+  that build is never published. These carry a standard Maven `-SNAPSHOT`
+  suffix — a deliberate policy adoption of Maven's own dev-version
+  convention, not the scheme's original design — with `-SNAPSHOT` always
+  the trailing segment, confirmed empirically (not assumed) via a scratch
+  `mvn install` comparison: `1.1.1-axon5.1-SNAPSHOT` gets recognized as a
+  snapshot by Maven's tooling (a version-level `maven-metadata-local.xml`
+  is generated on install), while `1.1.1-SNAPSHOT-axon5.1` is silently
+  treated as an ordinary release version instead — so the qualifier must
+  always precede `-SNAPSHOT`, never follow it. Every child module's own
+  `<parent><version>` is a hardcoded literal (Maven doesn't allow a
+  property expression there, since the parent POM is resolved before
+  properties are interpolated) and must independently track the root
+  aggregator's `<version>` — verified the hard way: letting these drift out
+  of sync doesn't fail the build, it silently resolves `${opendcb.version}`/
+  `${opendcb-axon.version}` from whatever matching parent version happens
+  to already be cached in `~/.m2` instead of the reactor's own `pom.xml`.
+  The real, tag-driven scheme:
 
   1. A release is cut by pushing a `vX.Y.Z` tag (e.g. `v1.2.3`), or by
      running `.github/workflows/release.yml` manually via
@@ -1073,6 +1089,26 @@ events).
      pattern as the other Central-publishing plugins, in each of the 10
      publishable modules (`examples/*` never opts in, matching the existing
      pattern).
+  6. Immediately after a successful deploy, `release.yml`'s final step
+     bumps the committed `pom.xml` values forward — not back to the
+     just-released version, but to that version's *next patch*, with
+     `-SNAPSHOT` appended: releasing `1.1.0` bumps `main`'s
+     `opendcb.version` to `1.1.1-SNAPSHOT` and `opendcb-axon.version` to
+     `1.1.1-axon5.1-SNAPSHOT` (only the release's `X.Y.Z` prefix is used
+     for this computation — a pre-release qualifier like `-rc.1` on the
+     released version is ignored). Patch, not minor, is the deliberate
+     default bump size: it costs nothing to under-guess, since this
+     committed value is never what actually gets published — the next real
+     release still resolves its own version from its own tag/input via the
+     `-D` overrides in step 4 above, entirely independent of whatever patch
+     number happens to be sitting in `main`. This step also patches every
+     child module's own hardcoded `<parent><version>` literal to match, in
+     the same commit — required so the reactor stays internally consistent
+     (see the stale-parent-version failure mode noted above). Same
+     protected-`main`-bypass mechanism as before (the `opendcb-release-bot`
+     GitHub App, not `GITHUB_TOKEN`) — see
+     `docs-site/docs/contributing.md`'s "Workflow and branch protection"
+     section.
 
   Verified end-to-end pre-`flatten-maven-plugin` (still holds with it added,
   confirmed via a fresh `mvn clean install`): `mvn clean install` from a
@@ -1091,6 +1127,28 @@ events).
   Deploying to Maven Central itself (real secrets, a real pushed tag) is
   outside what a coding session can verify locally — see the "does NOT yet
   cover" note above.
+
+  **Next-patch-`-SNAPSHOT` bump (step 6 above) verified separately,
+  end-to-end, when it was adopted:** the bump script's version arithmetic
+  was run inside a real `ubuntu:24.04` Docker container (not the local
+  macOS/zsh shell, which was confirmed to silently mis-execute it —
+  `BASH_REMATCH` is unset under zsh, and BSD `sed` doesn't support GNU
+  sed's `"0,/pattern/"` first-match address the same way), matching the
+  real `ubuntu-latest` Actions runner's bash + GNU sed. Confirmed correct
+  output across `1.1.0` -> `1.1.1-SNAPSHOT` / `1.1.1-axon5.1-SNAPSHOT`,
+  `1.2.3-rc.1` -> `1.2.4-SNAPSHOT` (pre-release qualifier correctly
+  ignored), and `2.0.9` -> `2.0.10-SNAPSHOT` (double-digit patch handled
+  correctly, no leading-zero or truncation bug). Separately, a real `mvn
+  clean install -DskipTests` against the SNAPSHOT-baseline `pom.xml` (no
+  `-D` overrides) exited `0` and produced `.flattened-pom.xml` files
+  correctly showing the plain SNAPSHOT values; a second, targeted `mvn
+  clean install -DskipTests -pl <module> -am
+  -Dopendcb.version=9.9.9 -Dopendcb-axon.version=9.9.9-axon5.1` run
+  confirmed the override mechanism works identically regardless of whether
+  the committed baseline is a plain release-shaped string or a `-SNAPSHOT`
+  string. Both runs' exit codes were checked directly against a redirected
+  log file rather than through a piped `tail`, since `mvn ... | tail -N;
+  echo $?` reports `tail`'s exit code, not `mvn`'s, without `pipefail`.
 - **Schema evolution:** RESOLVED (partially) — `integrations/eventstore-axon`
   now uses Axon's real `Converter` SPI (`JacksonConverter`) for payload
   (de)serialization instead of an ad-hoc `ObjectMapper`. Upcasting remains

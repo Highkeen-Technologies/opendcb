@@ -223,11 +223,27 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: opendcb
 
-      - name: Bump committed local-dev-default versions to match the release
+      # Bumps to the NEXT PATCH after the version just released, with a
+      # trailing "-SNAPSHOT" — Maven's own standard dev-version convention,
+      # not "match the release" (an earlier version of this step). Only the
+      # leading X.Y.Z of the released version is used for the patch bump; a
+      # release qualifier (e.g. 1.2.3-rc.1) doesn't change what patch comes
+      # next after the underlying X.Y.Z line.
+      #
+      # "-SNAPSHOT" MUST be the final segment of the version string for
+      # Maven's own tooling to actually recognize it as a snapshot (e.g.
+      # generate version-level snapshot metadata on install/deploy) — verified
+      # empirically, not assumed: a scratch install of "1.1.1-axon5.1-SNAPSHOT"
+      # produces a maven-metadata-local.xml inside that version's local-repo
+      # directory, while the same install of "1.1.1-SNAPSHOT-axon5.1" does
+      # not, meaning Maven silently treats the latter as an ordinary release
+      # version despite the "SNAPSHOT" text appearing in it. So the Axon-tied
+      # group's next-dev version is "${NEXT_PATCH}-${AXON_VERSION_QUALIFIER}-SNAPSHOT",
+      # never "${NEXT_PATCH}-SNAPSHOT-${AXON_VERSION_QUALIFIER}".
+      - name: Bump committed local-dev-default versions to next-patch-SNAPSHOT
         if: success()
         env:
-          NEW_VERSION: ${{ steps.version.outputs.opendcb_version }}
-          NEW_AXON_VERSION: ${{ steps.version.outputs.opendcb_axon_version }}
+          RELEASED_VERSION: ${{ steps.version.outputs.opendcb_version }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
@@ -235,11 +251,36 @@ jobs:
           git fetch --depth=1 origin main
           git checkout -B main FETCH_HEAD
 
+          if [[ "$RELEASED_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            NEXT_PATCH="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$(( BASH_REMATCH[3] + 1 ))"
+          else
+            echo "::error::Could not parse an X.Y.Z prefix out of released version '${RELEASED_VERSION}'"
+            exit 1
+          fi
+
+          NEW_VERSION="${NEXT_PATCH}-SNAPSHOT"
+          NEW_AXON_VERSION="${NEXT_PATCH}-${AXON_VERSION_QUALIFIER}-SNAPSHOT"
+
           sed -i "0,/<version>[^<]*<\/version>/s//<version>${NEW_VERSION}<\/version>/" pom.xml
           sed -i "s/<opendcb.version>[^<]*<\/opendcb.version>/<opendcb.version>${NEW_VERSION}<\/opendcb.version>/" pom.xml
           sed -i "s/<opendcb-axon.version>[^<]*<\/opendcb-axon.version>/<opendcb-axon.version>${NEW_AXON_VERSION}<\/opendcb-axon.version>/" pom.xml
 
-          if git diff --quiet -- pom.xml; then
+          # Every child module's <parent><version> is a hardcoded literal, not a
+          # ${...} property reference — Maven resolves a <parent> block before
+          # properties are interpolated, so an expression isn't allowed there.
+          # It must independently track the root aggregator's own <version>
+          # above, or Maven falls back to resolving the parent from whatever
+          # matching version happens to already be cached locally instead of
+          # this reactor's own pom.xml — verified empirically: a mismatch here
+          # silently resolved ${opendcb.version} from a stale cached parent
+          # rather than failing loudly, so this step must keep both in sync on
+          # every bump, not just once.
+          mapfile -t MODULE_POMS < <(grep -o '<module>[^<]*</module>' pom.xml | sed 's/<module>//;s/<\/module>//;s/$/\/pom.xml/')
+          for module_pom in "${MODULE_POMS[@]}"; do
+            sed -i "/<parent>/,/<\/parent>/ s/<version>[^<]*<\/version>/<version>${NEW_VERSION}<\/version>/" "$module_pom"
+          done
+
+          if git diff --quiet -- pom.xml "${MODULE_POMS[@]}"; then
             echo "pom.xml on main already reflects ${NEW_VERSION} — nothing to commit."
             exit 0
           fi
@@ -254,7 +295,7 @@ jobs:
           # affect push authorization.
           git config user.name "opendcb-release-bot[bot]"
           git config user.email "318557238+opendcb-release-bot[bot]@users.noreply.github.com"
-          git add pom.xml
-          git commit -m "Bump committed local-dev-default versions to ${NEW_VERSION} after release"
+          git add pom.xml "${MODULE_POMS[@]}"
+          git commit -m "Bump committed local-dev-default versions to ${NEW_VERSION} after releasing ${RELEASED_VERSION}"
           git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin main
