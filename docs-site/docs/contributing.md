@@ -26,11 +26,21 @@ If you want to contribute code, start with:
 
 ## Workflow and branch protection
 
-`main` is protected: every change lands via a pull request with at least
-one approving review, and both of `ci.yml`'s checks — `Architectural
-boundary checks` and `Build and test (full reactor)` — must pass before a
-PR can merge. Direct pushes to `main` are blocked for everyone, with one
-narrow, deliberate exception described below.
+`main` is protected: every change lands via a pull request, and both of
+`ci.yml`'s checks — `Architectural boundary checks` and `Build and test
+(full reactor)` — must pass before a PR can merge. Direct pushes to `main`
+are blocked for everyone, with one narrow, deliberate exception described
+below.
+
+**Approving-review requirement is currently relaxed to zero.** OpenDCB is,
+per `AUTHORS.md`, a single-maintainer project right now — requiring a
+second approving review with nobody else able to give one would block
+every PR indefinitely, which defeats the point of the requirement rather
+than enforcing anything. This is a deliberate, temporary relaxation, not a
+signal that review doesn't matter: both CI checks above still gate every
+merge regardless of team size, and `required_approving_review_count`
+should be raised back to at least `1` as soon as a second regular
+contributor joins the project.
 
 **Branch off `main`, open a PR.** There's no separate development branch —
 `main` is always the integration branch. Cut your working branch from
