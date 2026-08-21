@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright the OpenDCB contributors
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.highkeen.opendcb</groupId>
+        <artifactId>opendcb</artifactId>
+        <version>1.2.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>opendcb-snapshot-postgres</artifactId>
+    <!-- Axon-tied version line: PostgresSnapshotStore directly implements Axon's real, free
+         org.axonframework.eventsourcing.snapshot.store.SnapshotStore SPI (unlike
+         opendcb-scheduling-core/opendcb-conductor-bridge/opendcb-data-protection, this module is
+         a genuine implementation of an existing Axon interface, not OpenDCB's own abstraction
+         standing in for a paywalled capability): confirmed a direct dependency, same
+         dependency:tree-based reasoning already applied to opendcb-conductor-bridge and
+         opendcb-data-protection; see the root pom.xml's opendcb-axon.version property comment. -->
+    <version>${opendcb-axon.version}</version>
+    <packaging>jar</packaging>
+
+    <name>OpenDCB :: Snapshot :: PostgreSQL</name>
+    <description>
+        Postgres-backed implementation of Axon Framework 5's real, free SnapshotStore SPI
+        (org.axonframework.eventsourcing.snapshot.store.SnapshotStore): not OpenDCB's own
+        abstraction. Own snapshot table, independent of the event log's own tables. Depends on
+        neither eventstore-core nor eventstore-postgres.
+    </description>
+    <url>https://github.com/Highkeen-Technologies/opendcb</url>
+
+    <scm>
+        <connection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</connection>
+        <developerConnection>scm:git:https://github.com/Highkeen-Technologies/opendcb.git</developerConnection>
+        <url>https://github.com/Highkeen-Technologies/opendcb</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <!-- Overrides the root pom.xml's maven.deploy.skip=true default: this is one of the
+             publishable modules, so its deploy goal must actually run. -->
+        <maven.deploy.skip>false</maven.deploy.skip>
+        <postgresql.version>42.7.4</postgresql.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <!-- Where SnapshotStore, Snapshot, GlobalIndexPosition/Position live: confirmed by
+                 reading the real 5.1.2 source, same artifact integrations/eventstore-axon
+                 already depends on. -->
+            <groupId>org.axonframework</groupId>
+            <artifactId>axon-eventsourcing</artifactId>
+        </dependency>
+        <dependency>
+            <!-- QualifiedName's real package (org.axonframework.messaging.core), needed at
+                 compile scope since PostgresSnapshotStore's SnapshotStore SPI methods take it as
+                 a parameter directly: same pattern integrations/eventstore-axon already uses. -->
+            <groupId>org.axonframework</groupId>
+            <artifactId>axon-messaging</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <dependency>
+            <!-- JDBC only; consumer brings their own driver: same "provided" scope pattern as
+                 eventstore-postgres. Also usable directly on the test classpath (provided implies
+                 test-classpath availability), used by this module's own Testcontainers-backed
+                 tests below. -->
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- End-to-end test wires a real eventstore-postgres-backed EventStorageEngine
+                 (via integrations/eventstore-axon) with this module's PostgresSnapshotStore, to
+                 prove the two actually work together: test scope only, this module's own main
+                 code never depends on either. -->
+            <groupId>com.highkeen.opendcb</groupId>
+            <artifactId>eventstore-core</artifactId>
+            <version>${opendcb.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.highkeen.opendcb</groupId>
+            <artifactId>eventstore-postgres</artifactId>
+            <version>${opendcb.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.highkeen.opendcb</groupId>
+            <artifactId>eventstore-axon</artifactId>
+            <version>${opendcb-axon.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Maven Central publishing: version/config inherited from the root pom.xml's
+                 pluginManagement; see the comment there for why examples/* don't declare these. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <extensions>true</extensions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

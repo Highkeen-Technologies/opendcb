@@ -174,6 +174,7 @@
         <module>opendcb-data-protection</module>
         <module>opendcb-data-protection-vault</module>
         <module>opendcb-data-protection-aws-kms</module>
+        <module>opendcb-snapshot-postgres</module>
         <module>examples/plain-java-sample</module>
         <module>examples/microservices-sample/orders-service</module>
         <module>examples/microservices-sample/shipping-service</module>

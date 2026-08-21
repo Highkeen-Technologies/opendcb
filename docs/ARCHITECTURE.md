@@ -52,6 +52,13 @@ and keeps the framework-agnostic layer honestly agnostic.
                                               Optional MasterKeyProvider implementation. Neither
                                               module is required by, or changes, opendcb-data-protection
                                               itself — see "Master key provider modules" below.
+5f. opendcb-snapshot-postgres                 depends on: org.axonframework (SnapshotStore, Snapshot,
+                                              SnapshotCapableEventStorageEngine — all @Internal, see
+                                              "opendcb-snapshot-postgres" section below) + JDBC (own
+                                              snapshot table). Genuinely Axon-coupled, same shape as
+                                              opendcb-data-protection. Does NOT depend on
+                                              eventstore-core or eventstore-postgres — snapshot
+                                              storage is a separate concern from the event log itself.
 6. outbox-relay-kafka                        depends on: outbox-relay-core
    outbox-relay-rabbitmq                     depends on: outbox-relay-core
    outbox-relay-webhook                      depends on: outbox-relay-core
@@ -371,6 +378,96 @@ library:
   required — this is precisely what the interface being pluggable from
   the start was for.
 
+## opendcb-snapshot-postgres: real Axon Framework snapshotting, genuinely free — not our own abstraction this time
+
+**Different from every other new module so far — this one is NOT
+reinventing a paid-only capability.** Verified directly against the real
+Axon Framework 5 source (not the marketing comparison page alone):
+`SnapshotStore`, `Snapshot`, `SnapshotCapableEventStorageEngine`, and the
+`@Snapshotting` annotation all live in `org.axonframework` — the free,
+released framework — confirmed by cloning `AxonFramework/AxonFramework`
+and reading the actual interfaces, not assumed from the earlier
+feature-comparison finding that "Snapshot support" showed free in both
+tiers. Unlike scheduling, sagas, and data protection, there is a real,
+stable, intended extension point to build against here — so this module
+is a genuine implementation of Axon's own SPI, not OpenDCB's own
+abstraction standing in for a missing one.
+
+**The write side needs zero code from this toolkit.** Placing
+`@Snapshotting(afterEvents = 100)` (or `afterSourcingTime = "PT5S"`, or
+both, OR'd) on any `@EventSourced` entity is enough — Axon's own framework
+code decides when to snapshot and calls `SnapshotStore.store(...)`
+itself. Nothing here is OpenDCB's concern.
+
+**The read side is a decorator, not an interface we implement.**
+`SnapshotCapableEventStorageEngine` wraps any existing `EventStorageEngine`
+— including `AbstractDcbEventStorageEngine`, completely unmodified — with
+snapshot-aware sourcing: on `source(SourcingCondition)`, when the
+condition's strategy is `SourcingStrategy.Snapshot`, it loads the latest
+snapshot via the given `SnapshotStore`, prepends it as a synthetic leading
+message, and sources only the events after its position, falling back
+automatically to full reconstruction if no snapshot exists. All other
+operations pass straight through to the delegate untouched.
+
+**The idiomatic wiring path is auto-decoration, not manual construction.**
+`EventSourcingConfigurer.create()` always registers Axon's own default
+`ConfigurationEnhancer` (`EventSourcingConfigurationDefaults`), which
+decorates whatever `EventStorageEngine` is registered with
+`SnapshotCapableEventStorageEngine` automatically, the moment a
+`SnapshotStore` component is also present in the same
+`ComponentRegistry` — confirmed directly from source, and proven in
+`opendcb-snapshot-postgres`'s own end-to-end test. Application/library code
+never needs to call the `SnapshotCapableEventStorageEngine` constructor (or
+any static factory) itself; registering the `SnapshotStore` component is
+enough:
+```java
+EventSourcingConfigurer.create()
+    .registerEntity(entityModule)
+    .registerEventStorageEngine(c -> engine)
+    .componentRegistry(cr -> cr.registerComponent(
+        SnapshotStore.class, c -> new PostgresSnapshotStore(dataSource)));
+```
+
+**What `opendcb-snapshot-postgres` actually is, given the above: one
+Postgres-backed `SnapshotStore` implementation.** Two async methods —
+`store(QualifiedName, Object identifier, Snapshot)` and
+`load(QualifiedName, Object identifier)` (no `ProcessingContext` parameter
+— confirmed from the real 5.1.2 interface, correcting an earlier draft of
+this section that assumed one by analogy with `EventStorageEngine`) —
+backed by a single table (`snapshot`: qualified name, identifier, position,
+version, payload, metadata, timestamp; composite primary key on
+`(qualified_name, identifier)`, one row per name+identifier, replaced via
+`INSERT ... ON CONFLICT ... DO UPDATE` on each new snapshot per
+`SnapshotStore.store`'s own documented replace-not-append semantics). This
+is the smallest new module in the toolkit — no relay, no correlation
+table, no lease/reclaim mechanism, no crypto — just a store and a load,
+both trivial once-per-entity operations, not high-frequency or
+concurrency-contended the way `eventstore-postgres`'s append path is.
+
+**Two honest caveats to document plainly, not gloss over:**
+
+- **`SnapshotStore`, `Snapshot`, and `SnapshotCapableEventStorageEngine`
+  are all annotated `@Internal`** in Axon's own source — their own
+  Javadoc states this marks code that "may introduce breaking changes
+  within minor and patch releases," unlike the stable public SPI
+  (`EventStorageEngine` itself, `Converter`, `CommandGateway`) everything
+  else in this toolkit is built against. Pin the Axon version tightly for
+  this module specifically, and re-verify against source on every Axon
+  version bump — don't assume this API surface is as stable as what
+  `integrations/eventstore-axon` targets.
+- **`SnapshotCapableEventStorageEngine.decorate(...)`, a convenience
+  static factory, does not exist at all in this project's pinned `5.1.2`
+  source** — it is `@since 5.3.0`, a later minor version, not merely "newer
+  than preferred." This was confirmed directly by reading the actual
+  `5.1.2` class, not inferred from a version-number comparison alone. The
+  constructor `SnapshotCapableEventStorageEngine(EventStorageEngine delegate,
+  SnapshotStore snapshotStore)` is `@since 5.1.0` and does exist — but per
+  the auto-decoration mechanism above, `opendcb-snapshot-postgres` never
+  actually calls it directly at all: registering `PostgresSnapshotStore` as
+  the `SnapshotStore` component is sufficient, and Axon's own
+  `ConfigurationEnhancer` performs the wrapping. No project-wide (or even
+  module-local) Axon version bump was needed for this module.
+
 ## Bootstrap modules: zero-boilerplate wiring without requiring Spring
 
 `integrations/eventstore-axon` deliberately never depends on a specific
@@ -448,6 +545,7 @@ first, `-spring-boot-...` is the suffix.
 | `opendcb-data-protection` | `com.highkeen.opendcb.dataprotection` |
 | `opendcb-data-protection-vault` | `com.highkeen.opendcb.dataprotection.vault` |
 | `opendcb-data-protection-aws-kms` | `com.highkeen.opendcb.dataprotection.awskms` |
+| `opendcb-snapshot-postgres` | `com.highkeen.opendcb.snapshot.postgres` |
 | `outbox-relay-kafka` | `com.highkeen.opendcb.relay.kafka` |
 | `outbox-relay-rabbitmq` | `com.highkeen.opendcb.relay.rabbitmq` |
 | `outbox-relay-webhook` | `com.highkeen.opendcb.relay.webhook` |
