@@ -486,6 +486,153 @@ opendcb/
 │   Depends on: opendcb-data-protection, AWS SDK for KMS
 │   (software.amazon.awssdk:kms).
 │
+├── opendcb-snapshot-postgres/
+│   A Postgres-backed implementation of Axon's own, genuinely free
+│   SnapshotStore interface — NOT OpenDCB's own abstraction, unlike
+│   scheduling/sagas/data-protection. Verified directly against the real
+│   AxonFramework 5.1.2 source: SnapshotStore, Snapshot, and
+│   SnapshotCapableEventStorageEngine all live in org.axonframework,
+│   released and free. See docs/ARCHITECTURE.md's
+│   "opendcb-snapshot-postgres" section for the full mechanism (Axon's
+│   own @Snapshotting annotation drives the write side entirely; this
+│   module only implements the two-method SnapshotStore interface —
+│   store(QualifiedName, Object identifier, Snapshot) and
+│   load(QualifiedName, Object identifier), no ProcessingContext parameter
+│   on either, confirmed from the real interface rather than assumed by
+│   analogy with EventStorageEngine).
+│   Wiring is auto-decoration, not manual construction: registering a
+│   PostgresSnapshotStore instance as the SnapshotStore component on an
+│   EventSourcingConfigurer is enough — Axon's own default
+│   ConfigurationEnhancer (EventSourcingConfigurationDefaults) decorates
+│   the registered EventStorageEngine with SnapshotCapableEventStorageEngine
+│   automatically. SnapshotCapableEventStorageEngine.decorate(...), a
+│   convenience static factory, does not exist at all at this project's
+│   pinned 5.1.2 (it's @since 5.3.0) — confirmed by reading the actual
+│   5.1.2 class, not by version-number comparison alone. The constructor
+│   (@since 5.1.0) does exist but this module never calls it directly,
+│   since the auto-decoration path makes manual construction unnecessary —
+│   no project-wide or module-local Axon version bump was needed.
+│   Smallest new module in the toolkit: one table, two async methods, no
+│   relay/correlation/lease machinery needed. Own snapshot table
+│   (independent of the event log's own tables): qualified_name,
+│   identifier, position, version, payload_class, payload_json,
+│   metadata_json, occurred_at, PRIMARY KEY (qualified_name, identifier) —
+│   store() upserts via INSERT ... ON CONFLICT (qualified_name, identifier)
+│   DO UPDATE, matching SnapshotStore.store's own documented
+│   replace-not-append contract. SnapshotStore, Snapshot, and
+│   SnapshotCapableEventStorageEngine are all marked @Internal in Axon's
+│   own source (may break in minor/patch Axon releases) — pinned tightly,
+│   re-verify against source on every Axon version bump.
+│   Status: DONE. PostgresSnapshotStoreTest (3 tests, real PostgreSQL 16
+│   Testcontainers): store() then load() round-trips the exact payload,
+│   position, version, metadata, and timestamp; a second store() for the
+│   same qualified name + identifier replaces the snapshot (load() returns
+│   the new one, and a direct query confirms exactly one row exists, not
+│   two); load() for a never-stored identifier completes with null, not an
+│   exception. PostgresSnapshotStoreEndToEndTest (1 test) is the one that
+│   actually proves the feature works end-to-end, not just the storage
+│   primitive: wraps a real eventstore-postgres-backed EventStorageEngine
+│   (via integrations/eventstore-axon's AbstractDcbEventStorageEngine) with
+│   this module's PostgresSnapshotStore (registered as the SnapshotStore
+│   component, letting Axon's own ConfigurationEnhancer auto-decorate);
+│   registers a CounterEntity annotated @Snapshotting(afterEvents = 2)
+│   whose @EventSourcingHandler increments an int on each CounterIncremented
+│   event; dispatches CreateCounter + 5x IncrementCounter (6 events total)
+│   through a real CommandGateway, each IncrementCounter forcing a genuine
+│   load via @InjectEntity — per SnapshotPolicy.afterEvents' real semantics
+│   (confirmed from source: the threshold is evaluated per individual
+│   sourcing/load operation via a local, non-cumulative event counter, not
+│   as a running total across the entity's whole history), the third
+│   IncrementCounter's load applies 3 events (> 2) and triggers a snapshot
+│   store; confirms via direct SQL that a snapshot row now exists; then
+│   builds a SECOND, independent EventSourcingConfigurer (same
+│   brand-new-configurer-proves-durability pattern as
+│   OpenDcbAxonPostgresTest) wired to a test-local CountingEventStoreStorage
+│   decorator wrapping a fresh PostgresEventStoreStorage against the same
+│   database, and dispatches one more IncrementCounter; asserts the number
+│   of events that decorator's readRange actually returned is strictly
+│   fewer than the 6 events genuinely appended — direct, observable proof
+│   sourcing used the snapshot rather than replaying the full log. All 4
+│   tests pass against real PostgreSQL, no mocking.
+│   mvn dependency:tree confirms org.axonframework:axon-eventsourcing and
+│   org.axonframework:axon-messaging both resolve as direct (depth-1)
+│   compile-scope dependencies of this module — grounding its placement in
+│   the opendcb-axon.version group, same dependency:tree-based reasoning
+│   already applied to opendcb-conductor-bridge and opendcb-data-protection
+│   (QualifiedName lives in axon-messaging's org.axonframework.messaging.core
+│   package, needed at compile scope since it's a direct parameter type on
+│   SnapshotStore's own methods — axon-messaging was added as an explicit
+│   direct dependency for this reason, not left transitive-only).
+│   Depends on: org.axonframework (axon-eventsourcing — SnapshotStore,
+│   Snapshot, SnapshotCapableEventStorageEngine, GlobalIndexPosition/Position;
+│   axon-messaging — QualifiedName), JDBC, jackson-databind. Does NOT
+│   depend on eventstore-core or eventstore-postgres in main code — both
+│   are test-scope-only dependencies, used solely by the end-to-end test.
+│
+│   **Investigated CI-cost concern, root-caused, not a code defect (2026-08-21):**
+│   the first full-reactor `mvn clean install` after this module was added
+│   showed `PostgresSnapshotStoreTest` (the plain store/load suite, not the
+│   end-to-end test) taking 755.9s in-reactor vs. 1.27s standalone — a
+│   16-minute-class outlier for three tests that are individually
+│   millisecond-fast. This was followed up rather than dropped, per this
+│   project's own standard for anything that could become a recurring CI
+│   cost:
+│   - **Isolated re-runs (3x, `mvn -pl opendcb-snapshot-postgres test
+│     -Dtest=PostgresSnapshotStoreTest`, no `-am`) confirmed the module
+│     itself is fine on its own**: 3.14s, 21.74s, 3.58s — normal
+│     JVM/Testcontainers-startup jitter (a single ~7x outlier among three
+│     runs), nowhere near 755s. The module and its tests are not the
+│     problem.
+│   - **A second full-reactor `mvn clean install` reproduced the underlying
+│     phenomenon, but not pinned to this module** — `bootstrap-axon-postgres`
+│     took 8:31 min (vs. 4.2s the first time) and `outbox-relay-rabbitmq`
+│     (built earlier in the reactor than this module) outright **failed**
+│     after a 1041s (17+ min) `ContainerLaunchException`: Testcontainers'
+│     `LogMessageWaitStrategy` timed out waiting for RabbitMQ's own
+│     `.*Server startup complete.*` log line. The build never reached
+│     `opendcb-snapshot-postgres` this run (later modules show `SKIPPED`),
+│     so this specific module's reproduction is inconclusive in isolation —
+│     but the class of failure (an arbitrary Testcontainers-backed module,
+│     10-20x+ slower than normal, sometimes to outright failure) clearly
+│     reproduced, just at a different point in the reactor.
+│   - **Root cause, confirmed via `docker ps -a` sampled throughout the run
+│     plus host-level diagnostics, is host/Docker-Desktop resource
+│     contention on the local dev machine — NOT a Testcontainers
+│     container-reuse/reaping leak.** `docker ps -a` never showed a stale
+│     container from an earlier module lingering alongside the current
+│     one (only the in-flight container plus the long-lived Ryuk reaper
+│     were ever present, and Ryuk cleaned up the failed RabbitMQ container
+│     promptly once its owning JVM exited) — every module's containers were
+│     torn down correctly, ruling out the "Conductor OSS/Vault container
+│     still running from an earlier module" hypothesis directly (those two
+│     modules were never even reached this run). Instead: a `docker
+│     stats`/`docker ps` polling loop sampled every 15s stalled completely
+│     for ~15 minutes (13:05:10 → 13:20:36) — i.e. the Docker daemon itself
+│     was unresponsive for a sustained stretch, exactly overlapping the
+│     `bootstrap-axon-postgres`/`outbox-relay-rabbitmq` window — and host
+│     diagnostics taken during that stretch showed a system load average of
+│     ~190 and Docker Desktop's own VM process
+│     (`com.apple.Virtualization.VirtualMachine`) pegged at ~192% CPU.
+│     `docker info` confirms this machine's Docker Desktop VM is capped at
+│     10 CPUs / 7.65GB RAM total — small for running Postgres/RabbitMQ (and,
+│     in a full run, Conductor OSS/Vault/LocalStack) back-to-back inside one
+│     long-lived `mvn clean install`, especially alongside ~57GB of cached
+│     images and ~40GB of reclaimable volumes from unrelated projects
+│     sharing the same Docker Desktop instance on this developer's machine.
+│   - **CI relevance:** this is a local-machine resource-contention finding,
+│     not evidence of a bug that would recur identically on a dedicated CI
+│     runner (GitHub Actions runners aren't shared with an IDE, browser, and
+│     other Docker projects the way this dev machine is). It IS relevant to
+│     CI in one respect worth carrying forward: this reactor build is
+│     sensitive enough to Docker/CPU/memory contention that a resource-
+│     starved runner could see the same class of Testcontainers
+│     `LogMessageWaitStrategy` timeout (an outright failure, not just
+│     slowness) on an arbitrary module — worth keeping in mind if CI ever
+│     shows a flaky, unrelated-looking Testcontainers timeout rather than
+│     assuming it's a real regression in whichever module happened to fail.
+│     No code or configuration change was made as a result of this
+│     investigation — findings only, per the scope of this pass.
+│
 ├── opendcb-axon-spring-boot-routing/
 │   Wires Axon's own free JdbcTokenStore against whichever eventstore-*
 │   datasource is active, so PooledStreamingEventProcessor segments can be
@@ -818,10 +965,22 @@ events).
     provider modules" section. Both depend only on opendcb-data-protection's
     MasterKeyProvider interface; neither changes opendcb-data-protection
     itself.
-15. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
+15. ~~`opendcb-snapshot-postgres`~~ — DONE. A Postgres-backed
+    implementation of Axon's own free SnapshotStore, not OpenDCB's own
+    abstraction — see the module's own entry above and
+    docs/ARCHITECTURE.md's "opendcb-snapshot-postgres" section. Smallest
+    module in the toolkit (one table, two async methods). Wired via
+    auto-decoration (registering the SnapshotStore component is enough —
+    Axon's own ConfigurationEnhancer wraps the EventStorageEngine
+    automatically), so the 5.3.0-only decorate() factory vs. the 5.1.0
+    constructor question turned out moot: this module calls neither
+    directly. End-to-end tested against real PostgreSQL, including direct,
+    observable proof (a counting EventStoreStorage decorator) that sourcing
+    after a snapshot reads fewer events than were actually appended.
+16. `eventstore-mysql`, `eventstore-mongo`, `outbox-relay-kafka`,
     `outbox-relay-webhook`, `bootstrap-axon-mysql`, `bootstrap-axon-mongo` —
     fill in once the pattern is validated once.
-16. `integrations/eventstore-<future-framework>` — only if/when a second
+17. `integrations/eventstore-<future-framework>` — only if/when a second
     framework actually becomes relevant. Not speculative work until then.
 
 ## Open questions worth deciding before writing more code
