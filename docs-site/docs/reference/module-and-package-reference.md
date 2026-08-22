@@ -16,6 +16,7 @@ its current status. Mirrors `README.md`'s module table and
 | `opendcb-axon-spring-boot-routing` | `com.highkeen.opendcb.routing.axon.springboot` | Multi-instance segment routing via Axon's `JdbcTokenStore` | Done |
 | `opendcb-scheduling-core` | `com.highkeen.opendcb.scheduling.core` | Schedule events for future, DCB-aware delivery | Done |
 | `opendcb-conductor-bridge` | `com.highkeen.opendcb.conductor.bridge` | Sagas/process managers via Conductor OSS | Done |
+| `opendcb-snapshot-postgres` | `com.highkeen.opendcb.snapshot.postgres` | Postgres-backed implementation of Axon's own, free `SnapshotStore` SPI | Done |
 | `outbox-relay-core` | `com.highkeen.opendcb.relay.core` | Tails the event log, publishes to a transport | Done |
 | `outbox-relay-rabbitmq` | `com.highkeen.opendcb.relay.rabbitmq` | RabbitMQ publisher for `outbox-relay-core` | Done |
 | `outbox-relay-kafka` | `com.highkeen.opendcb.relay.kafka` | Kafka publisher | Not started |

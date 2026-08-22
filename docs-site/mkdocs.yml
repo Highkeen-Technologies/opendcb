@@ -61,6 +61,7 @@ nav:
       - Database Setup: setup/database-setup.md
   - Module Guides:
       - Storage (eventstore-core and eventstore-postgres): module-guides/storage.md
+      - Snapshotting: module-guides/snapshotting.md
       - Axon Integration: module-guides/axon-integration.md
       - Spring Boot Starter and Scaling: module-guides/spring-boot-starter-and-scaling.md
       - Scheduling Events: module-guides/scheduling-events.md
@@ -69,6 +70,7 @@ nav:
       - Data Protection and Key Management: module-guides/data-protection-and-key-management.md
   - Tutorials:
       - Build Your First Event-Sourced Entity: tutorials/build-your-first-event-sourced-entity.md
+      - Enable Snapshotting: tutorials/enable-snapshotting.md
       - Scale Across Multiple Instances: tutorials/scale-across-multiple-instances.md
       - Build a Two-Service System: tutorials/build-a-two-service-system.md
       - Schedule a Future Event: tutorials/schedule-a-future-event.md
