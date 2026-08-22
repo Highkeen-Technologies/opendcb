@@ -1,9 +1,14 @@
 # OpenDCB
 
 [![CI](https://github.com/Highkeen-Technologies/opendcb/actions/workflows/ci.yml/badge.svg)](https://github.com/Highkeen-Technologies/opendcb/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-highkeen--technologies.github.io%2Fopendcb-blue)](https://highkeen-technologies.github.io/opendcb/)
 
 **Maintained by [Highkeen Technologies](https://highkeen.com).** See
 [AUTHORS.md](AUTHORS.md) for maintainers.
+
+**📖 Full documentation: [highkeen-technologies.github.io/opendcb](https://highkeen-technologies.github.io/opendcb/)**
+— getting started guides, module guides, tutorials, and reference, all in
+one place. This README is a quick overview.
 
 OpenDCB is an open-source Java toolkit that fills the gap [Axon Framework
 5](https://github.com/AxonFramework/AxonFramework) (free) deliberately
